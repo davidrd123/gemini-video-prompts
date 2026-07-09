@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/davidrd123-riff-mcp-badge.png)](https://mseep.ai/app/davidrd123-riff-mcp)
+
 # riff-mcp
 
 Toolkit for the *riff* workflow — iteratively generate, analyze, and refine AI-generated media. Three pieces in one repo:
