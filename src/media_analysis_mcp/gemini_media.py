@@ -12,6 +12,10 @@ Error codes raised here:
 - VIDEO_UPLOAD_FAILED — Files API upload failed
 - VIDEO_PROCESSING_TIMEOUT — file did not become ACTIVE within timeout
 - VIDEO_PROCESSING_FAILED — file ended in FAILED state
+- AUDIO_NOT_FOUND — audio path doesn't exist
+- AUDIO_UPLOAD_FAILED — Files API audio upload failed
+- AUDIO_PROCESSING_TIMEOUT — audio did not become ACTIVE within timeout
+- AUDIO_PROCESSING_FAILED — audio ended in FAILED state
 - NO_RESPONSE — Gemini returned no parseable response
 """
 from __future__ import annotations
@@ -81,30 +85,34 @@ def load_image(path: str, *, image_module: Any) -> Any:
     return img.convert("RGB")
 
 
-def upload_and_poll_video(
+def _upload_and_poll_media(
     client: Any,
     path: str,
     *,
+    media_kind: str,
     timeout_s: int = 300,
     poll_interval_s: float = 2.0,
 ) -> Any:
-    """Upload a video to Gemini's Files API and poll until ``state == 'ACTIVE'``.
+    """Upload media to Gemini's Files API and poll until ACTIVE.
 
     Returns the file object (with ``.uri`` and ``.mime_type``) ready to be
-    passed in a ``contents`` list as ``gtypes.FileData``. Caller is responsible
-    for ``cleanup_uploaded(client, file)`` in a ``finally`` block — uploaded
-    files persist on Gemini's side for ~48h otherwise.
+    passed in a ``contents`` list as ``gtypes.FileData``. ``media_kind`` is
+    used only to preserve the public coded-error contract for video and audio.
+    Caller is responsible for ``cleanup_uploaded(client, file)`` in a
+    ``finally`` block — uploaded files persist on Gemini's side for ~48h
+    otherwise.
 
     Pattern lifted from DMPOST31's ``nano_analyze_media`` helper.
     """
+    kind = media_kind.upper()
     p = Path(path).expanduser()
     if not p.is_file():
-        raise RuntimeError(f"VIDEO_NOT_FOUND: {p}")
+        raise RuntimeError(f"{kind}_NOT_FOUND: {p}")
 
     try:
         uploaded = client.files.upload(file=str(p))
     except Exception as exc:
-        raise RuntimeError(f"VIDEO_UPLOAD_FAILED: {exc}") from exc
+        raise RuntimeError(f"{kind}_UPLOAD_FAILED: {exc}") from exc
 
     deadline = time.perf_counter() + timeout_s
     while True:
@@ -135,7 +143,7 @@ def upload_and_poll_video(
             except Exception:
                 pass
             raise RuntimeError(
-                f"VIDEO_PROCESSING_FAILED: file {uploaded.name} ended in FAILED state"
+                f"{kind}_PROCESSING_FAILED: file {uploaded.name} ended in FAILED state"
             )
         if time.perf_counter() > deadline:
             try:
@@ -143,10 +151,50 @@ def upload_and_poll_video(
             except Exception:
                 pass
             raise RuntimeError(
-                f"VIDEO_PROCESSING_TIMEOUT: file {uploaded.name} did not reach "
+                f"{kind}_PROCESSING_TIMEOUT: file {uploaded.name} did not reach "
                 f"ACTIVE state within {timeout_s}s (last state: {state_str!r})"
             )
         time.sleep(poll_interval_s)
+
+
+def upload_and_poll_video(
+    client: Any,
+    path: str,
+    *,
+    timeout_s: int = 300,
+    poll_interval_s: float = 2.0,
+) -> Any:
+    """Upload a video and poll until ACTIVE. Caller must clean it up."""
+    return _upload_and_poll_media(
+        client,
+        path,
+        media_kind="video",
+        timeout_s=timeout_s,
+        poll_interval_s=poll_interval_s,
+    )
+
+
+def upload_and_poll_audio(
+    client: Any,
+    path: str,
+    *,
+    timeout_s: int = 300,
+    poll_interval_s: float = 2.0,
+) -> Any:
+    """Upload audio and poll until ACTIVE. Caller must clean it up.
+
+    The returned Files API object's ``mime_type`` is authoritative. In
+    particular, Gemini may identify an ``.m4a`` as ``audio/mp4a-latm``;
+    callers must not relabel it as ``video/mp4`` or even a guessed
+    ``audio/mp4`` when constructing ``FileData``.
+    """
+    return _upload_and_poll_media(
+        client,
+        path,
+        media_kind="audio",
+        timeout_s=timeout_s,
+        poll_interval_s=poll_interval_s,
+    )
 
 
 def cleanup_uploaded(client: Any, file_obj: Any) -> None:

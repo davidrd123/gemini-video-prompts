@@ -1,4 +1,7 @@
+import hashlib
 import json
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -27,10 +30,21 @@ def test_generate_video_dry_run_modes() -> None:
         reference_videos=["/tmp/motion.mp4"],
         dry_run=True,
     )
+    explicit_seed = gen_server.generate_video(
+        prompt="A repeatable camera test",
+        seed=1234,
+        dry_run=True,
+    )
 
     assert text_only["mode"] == "text_to_video"
     assert video_ref["mode"] == "omni_reference"
     assert image_and_video["mode"] == "first_last_frames"
+    assert explicit_seed["seed_provenance"] == {
+        "requested_seed": 1234,
+        "effective_seed": 1234,
+        "source": "request",
+        "matches_requested": True,
+    }
 
 
 @pytest.mark.parametrize(
@@ -47,6 +61,71 @@ def test_generate_video_dry_run_modes() -> None:
 def test_seedance_validation_errors_are_coded(kwargs: dict) -> None:
     with pytest.raises(RuntimeError, match="^INVALID_INPUT:"):
         seedance.build_seedance_video_params(**kwargs)
+
+
+def test_seed_provenance_prefers_provider_log_over_echoed_input() -> None:
+    provenance = seedance.resolve_seed_provenance(
+        requested_seed=41,
+        prediction={"input": {"seed": 42}, "logs": "Using seed: 43"},
+    )
+
+    assert provenance == {
+        "requested_seed": 41,
+        "effective_seed": 43,
+        "source": "provider_logs",
+        "matches_requested": False,
+    }
+
+
+def test_seed_provenance_recovers_provider_generated_seed_from_logs() -> None:
+    provenance = seedance.resolve_seed_provenance(
+        requested_seed=None,
+        prediction={"logs": "Preparing model\nUsing seed: 2091770884\nGenerating"},
+    )
+
+    assert provenance == {
+        "requested_seed": None,
+        "effective_seed": 2091770884,
+        "source": "provider_logs",
+        "matches_requested": None,
+    }
+
+
+def test_seedance_hashes_the_same_open_stream_passed_to_provider(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    image_module = pytest.importorskip("PIL.Image")
+    image = tmp_path / "reference.png"
+    image_module.new("RGB", (16, 9), color=(12, 34, 56)).save(image)
+    captured: dict = {}
+
+    def fake_create_prediction(**kwargs):
+        handle = kwargs["params"]["image"]
+        captured["handle"] = handle
+        captured["bytes"] = handle.read()
+        return {"id": "pred-stream-hash", "status": "starting"}
+
+    monkeypatch.setattr(
+        seedance.replicate_min,
+        "create_prediction",
+        fake_create_prediction,
+    )
+    params = seedance.build_seedance_video_params(
+        prompt="Animate [Image1]",
+        image=str(image),
+        aspect_ratio="16:9",
+    )
+
+    prediction = seedance.create_seedance_prediction(api_params=params)
+
+    identity = prediction["_reference_file_identities"][str(image.resolve())]
+    assert captured["bytes"] == image.read_bytes()
+    assert identity == {
+        "bytes": len(captured["bytes"]),
+        "sha256": hashlib.sha256(captured["bytes"]).hexdigest(),
+        "hash_source": "uploaded_file_stream",
+    }
+    assert captured["handle"].closed is True
 
 
 def test_generate_video_preserves_coded_error_prefix(
@@ -123,6 +202,11 @@ def test_generate_video_writes_job_json_and_cold_start(
     saved = json.loads(job_json.read_text(encoding="utf-8"))
     assert saved["status"] == "ok"
     assert saved["metrics"]["cold_start"] is True
+    assert saved["seed_provenance"]["source"] == "unavailable"
+    assert saved["references"][0]["sha256"] == hashlib.sha256(
+        image_path.read_bytes()
+    ).hexdigest()
+    assert saved["outputs"][0]["sha256"] == hashlib.sha256(b"fake video").hexdigest()
 
 
 def test_start_video_job_writes_local_status(
@@ -163,6 +247,17 @@ def test_start_video_job_writes_local_status(
     saved = json.loads(Path(result["status_path"]).read_text(encoding="utf-8"))
     assert saved["job_id"] == result["job_id"]
     assert saved["prediction_id"] == "pred-starting"
+    assert saved["generation_id"] == result["job_id"]
+    assert saved["seed_provenance"]["effective_seed"] is None
+    assert saved["references"][0]["bytes"] == image_path.stat().st_size
+    assert saved["references"][0]["sha256"] == hashlib.sha256(
+        image_path.read_bytes()
+    ).hexdigest()
+
+    index_path = tmp_path / "out" / "jobs" / "index.ndjson"
+    entries = [json.loads(line) for line in index_path.read_text().splitlines()]
+    assert entries[0]["event"] == "created"
+    assert entries[0]["generation_id"] == result["job_id"]
 
 
 def test_start_video_job_uses_unique_job_dirs(
@@ -201,6 +296,37 @@ def test_start_video_job_uses_unique_job_dirs(
     assert first["job_dir"] != second["job_dir"]
     assert first["job_dir"].endswith(first["job_id"])
     assert second["job_dir"].endswith(second["job_id"])
+
+
+def test_start_video_job_survives_index_write_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, image_path: Path
+) -> None:
+    monkeypatch.setattr(
+        gen_server.seedance,
+        "create_seedance_prediction",
+        lambda **kwargs: {
+            "id": "pred-index-warning",
+            "status": "starting",
+            "input": {},
+        },
+    )
+    monkeypatch.setattr(
+        gen_server,
+        "_append_generation_index",
+        lambda *args, **kwargs: "synthetic index failure",
+    )
+
+    result = gen_server.start_video_job(
+        prompt="Use [Image1]",
+        image=str(image_path),
+        out_root=str(tmp_path / "out"),
+    )
+
+    assert result["job_id"]
+    assert result["provenance_warnings"] == ["synthetic index failure"]
+    saved = json.loads(Path(result["status_path"]).read_text(encoding="utf-8"))
+    assert saved["prediction_id"] == "pred-index-warning"
+    assert saved["provenance_warnings"] == ["synthetic index failure"]
 
 
 def test_start_video_job_create_failure_leaves_no_local_job_record(
@@ -300,6 +426,7 @@ def test_get_video_job_finalizes_succeeded_prediction(
             "completed_at": "2026-05-09T10:00:30Z",
             "output": ["https://example.com/fake.mp4"],
             "metrics": {"predict_time": 1.5},
+            "logs": "Using seed: 2091770884\nGenerating video...",
             "error": None,
         },
     )
@@ -348,11 +475,208 @@ def test_get_video_job_finalizes_succeeded_prediction(
     assert result["result"]["status"] == "ok"
     assert result["result"]["outputs"][0]["path"].endswith(".mp4")
     assert result["result"]["metrics"]["predict_time_s"] == 1.5
+    assert result["seed_provenance"] == {
+        "requested_seed": None,
+        "effective_seed": 2091770884,
+        "source": "provider_logs",
+        "matches_requested": None,
+    }
+    assert result["result"]["seed_provenance"] == result["seed_provenance"]
 
     job_json = Path(result["job_dir"]) / "job.json"
     assert job_json.is_file()
     saved_job = json.loads(job_json.read_text(encoding="utf-8"))
     assert saved_job["prediction_id"] == "pred-done"
+    assert saved_job["generation_id"] == started["job_id"]
+    assert saved_job["seed_provenance"]["effective_seed"] == 2091770884
+    assert saved_job["outputs"][0]["sha256"] == hashlib.sha256(
+        b"fake video"
+    ).hexdigest()
+
+    provenance = gen_server.get_generation(
+        started["job_id"],
+        out_root=str(tmp_path / "out"),
+    )
+    assert provenance["state"] == "succeeded"
+    assert provenance["request"]["prompt"] == "Use [Image1]"
+    assert provenance["result"]["prediction_id"] == "pred-done"
+    assert provenance["seed_provenance"]["effective_seed"] == 2091770884
+
+    listed = gen_server.list_generations(
+        out_root=str(tmp_path / "out"),
+        query="Use [Image1]",
+        status_filter="succeeded",
+    )
+    assert listed["total"] == 1
+    assert listed["generations"][0]["job_id"] == started["job_id"]
+    assert listed["generations"][0]["seed_provenance"]["effective_seed"] == 2091770884
+    assert listed["generations"][0]["reference_files"][0]["sha256"]
+    assert listed["generations"][0]["output_files"][0]["sha256"]
+
+    second_read = gen_server.get_video_job(
+        started["job_id"],
+        out_root=str(tmp_path / "out"),
+    )
+    assert second_read["status"] == "succeeded"
+    index_path = tmp_path / "out" / "jobs" / "index.ndjson"
+    index_events = [
+        json.loads(line)["event"] for line in index_path.read_text().splitlines()
+    ]
+    assert index_events == ["created", "succeeded"]
+
+
+def test_list_generations_recovers_seed_from_pre_index_status(tmp_path: Path) -> None:
+    out_root = tmp_path / "out"
+    status_dir = out_root / "jobs" / "legacy-job"
+    status_dir.mkdir(parents=True)
+    status = {
+        "job_id": "legacy-job",
+        "prediction_id": "pred-legacy",
+        "provider": "replicate",
+        "status": "succeeded",
+        "created_at": "2026-01-01T00:00:00Z",
+        "title": "Legacy doorway shot",
+        "model": "bytedance/seedance-2.0",
+        "mode": "text_to_video",
+        "prompt": "A doorway opens",
+        "resolved_params": {"seed": None},
+        "references": [],
+        "job_dir": str(tmp_path / "legacy-output"),
+        "provider_prediction": {"logs": "Using seed: 7654321\n"},
+    }
+    (status_dir / "status.json").write_text(
+        json.dumps(status, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    listed = gen_server.list_generations(out_root=str(out_root))
+
+    assert listed["index_path"].endswith("jobs/index.ndjson")
+    assert listed["total"] == 1
+    assert listed["generations"][0]["job_id"] == "legacy-job"
+    assert listed["generations"][0]["seed_provenance"] == {
+        "requested_seed": None,
+        "effective_seed": 7654321,
+        "source": "provider_logs",
+        "matches_requested": None,
+    }
+
+
+def test_index_recovers_when_marker_exists_without_event(tmp_path: Path) -> None:
+    out_root = tmp_path / "out"
+    job_id = "marker-only-job"
+    marker_dir = out_root / "jobs" / job_id
+    marker_dir.mkdir(parents=True)
+    (marker_dir / ".index-event-created").write_text("stale marker\n")
+    status = {
+        "job_id": job_id,
+        "status": "starting",
+        "references": [],
+    }
+
+    warning = gen_server._append_generation_index(
+        out_root,
+        status,
+        event="created",
+    )
+    second_warning = gen_server._append_generation_index(
+        out_root,
+        status,
+        event="created",
+    )
+
+    assert warning is None
+    assert second_warning is None
+    index_path = out_root / "jobs" / "index.ndjson"
+    entries = [json.loads(line) for line in index_path.read_text().splitlines()]
+    assert [(entry["job_id"], entry["event"]) for entry in entries] == [
+        (job_id, "created")
+    ]
+
+
+def test_index_separates_new_event_after_partial_crash_tail(
+    tmp_path: Path,
+) -> None:
+    out_root = tmp_path / "out"
+    index_path = out_root / "jobs" / "index.ndjson"
+    index_path.parent.mkdir(parents=True)
+    index_path.write_bytes(b'{"job_id":"crashed"')
+    status = {
+        "job_id": "recovered-job",
+        "status": "starting",
+        "references": [],
+    }
+
+    warning = gen_server._append_generation_index(
+        out_root,
+        status,
+        event="created",
+    )
+
+    assert warning is None
+    entries, warnings = gen_server._read_generation_index(out_root)
+    assert [entry["job_id"] for entry in entries] == ["recovered-job"]
+    assert len(warnings) == 1
+    assert index_path.read_bytes().startswith(b'{"job_id":"crashed"\n')
+
+
+def test_index_recovers_after_partial_multibyte_crash_tail(
+    tmp_path: Path,
+) -> None:
+    out_root = tmp_path / "out"
+    index_path = out_root / "jobs" / "index.ndjson"
+    index_path.parent.mkdir(parents=True)
+    index_path.write_bytes(b'{"job_id":"crashed","prompt":"\xe2')
+    status = {
+        "job_id": "recovered-unicode-job",
+        "status": "starting",
+        "references": [],
+    }
+
+    warning = gen_server._append_generation_index(
+        out_root,
+        status,
+        event="created",
+    )
+
+    assert warning is None
+    entries, warnings = gen_server._read_generation_index(out_root)
+    assert [entry["job_id"] for entry in entries] == [
+        "recovered-unicode-job"
+    ]
+    assert len(warnings) == 1
+    assert "invalid JSON" in warnings[0]
+
+
+def test_shared_index_serializes_events_from_different_jobs(tmp_path: Path) -> None:
+    out_root = tmp_path / "out"
+    statuses = [
+        {
+            "job_id": f"job-{index}",
+            "status": "starting",
+            "references": [],
+        }
+        for index in range(8)
+    ]
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        warnings = list(
+            executor.map(
+                lambda status: gen_server._append_generation_index(
+                    out_root,
+                    status,
+                    event="created",
+                ),
+                statuses,
+            )
+        )
+
+    assert warnings == [None] * len(statuses)
+    index_path = out_root / "jobs" / "index.ndjson"
+    entries = [json.loads(line) for line in index_path.read_text().splitlines()]
+    assert {entry["job_id"] for entry in entries} == {
+        status["job_id"] for status in statuses
+    }
 
 
 def test_get_video_job_finalizes_terminal_status_without_result(
@@ -419,6 +743,79 @@ def test_get_video_job_finalizes_terminal_status_without_result(
     assert result["status"] == "succeeded"
     assert result["outputs_downloaded"] is True
     assert result["result"]["prediction_id"] == "pred-terminal"
+
+
+def test_concurrent_terminal_merges_download_and_index_once(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, image_path: Path
+) -> None:
+    completed_prediction = {
+        "id": "pred-concurrent",
+        "status": "succeeded",
+        "version": "@latest",
+        "completed_at": "2026-05-09T10:00:30Z",
+        "output": ["https://example.com/fake.mp4"],
+        "metrics": {},
+        "logs": "Using seed: 123456\n",
+        "error": None,
+    }
+    monkeypatch.setattr(
+        gen_server.seedance,
+        "create_seedance_prediction",
+        lambda **kwargs: {
+            "id": "pred-concurrent",
+            "status": "processing",
+            "input": {},
+        },
+    )
+
+    download_calls: list[int] = []
+
+    def fake_download_prediction_outputs(**kwargs):
+        download_calls.append(1)
+        time.sleep(0.03)
+        output_path = kwargs["out_dir"] / "fake_00.mp4"
+        output_path.write_bytes(b"fake video")
+        return [
+            {
+                "path": str(output_path),
+                "url": kwargs["outputs"][0],
+                "bytes": output_path.stat().st_size,
+            }
+        ]
+
+    monkeypatch.setattr(
+        gen_server.seedance,
+        "download_prediction_outputs",
+        fake_download_prediction_outputs,
+    )
+    monkeypatch.setattr(
+        gen_server.seedance,
+        "probe_media_info",
+        lambda path: {},
+    )
+
+    out_root = tmp_path / "out"
+    started = gen_server.start_video_job(
+        prompt="Use [Image1]",
+        image=str(image_path),
+        out_root=str(out_root),
+    )
+
+    def finalize():
+        return gen_server._merge_prediction_status(
+            status=dict(started),
+            prediction=completed_prediction,
+            out_root=out_root,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(lambda _: finalize(), range(2)))
+
+    assert [result["status"] for result in results] == ["succeeded", "succeeded"]
+    assert len(download_calls) == 1
+    index_path = out_root / "jobs" / "index.ndjson"
+    events = [json.loads(line)["event"] for line in index_path.read_text().splitlines()]
+    assert events == ["created", "succeeded"]
 
 
 def test_cancel_video_job_updates_status(

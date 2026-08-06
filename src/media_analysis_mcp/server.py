@@ -3,6 +3,7 @@
 Tools (per MCP_DESIGN.md sequencing):
 - describe_image, score_image     — Step 5 (this file)
 - describe_video, score_video     — Step 6
+- analyze_audio                   — free-form audio Q&A / transcription
 - extract_video_frames            — Step 7
 - compare_images,                 — Step 8
   extract_visual_tokens
@@ -24,7 +25,9 @@ from . import ffmpeg_utils, gemini_media, prompts, schemas
 
 
 mcp = FastMCP("media-analysis-mcp")
-DEFAULT_ANALYSIS_MODEL = "gemini-3.5-flash"
+DEFAULT_ANALYSIS_MODEL = "gemini-3.6-flash"
+DEFAULT_VIDEO_ANALYSIS_MODEL = DEFAULT_ANALYSIS_MODEL
+DEFAULT_AUDIO_ANALYSIS_MODEL = DEFAULT_ANALYSIS_MODEL
 
 
 def _build_image_contents(
@@ -136,7 +139,7 @@ def describe_image(
         identity_refs: Optional list of character/asset reference paths.
             Useful for evaluating identity carry-through across shot types.
         style_refs: Optional list of style anchor paths.
-        model: Gemini model id. Default ``gemini-3.5-flash``.
+        model: Gemini model id. Default ``gemini-3.6-flash``.
         temperature: Optional sampling override; omitted by default.
         system_prompt: Override the default observation-mode system
             instruction. Rare.
@@ -225,7 +228,7 @@ def score_image(
         style_refs: References for style_lock dim.
         criteria: Override the default 6-dim list. Each entry becomes one
             evaluation in the response.
-        model: Gemini model id. Default ``gemini-3.5-flash``.
+        model: Gemini model id. Default ``gemini-3.6-flash``.
         temperature: Optional sampling override; omitted by default.
         system_prompt: Override the default scoring-mode system
             instruction. Rare.
@@ -342,7 +345,7 @@ def analyze_image(
         base_plate_path: Optional reference image (source plate).
         identity_refs: Optional character/asset reference paths.
         style_refs: Optional style anchor paths.
-        model: Gemini model id. Default ``gemini-3.5-flash``.
+        model: Gemini model id. Default ``gemini-3.6-flash``.
         temperature: Optional sampling override; omitted by default.
         system_prompt: Override the default analyze-mode instruction.
 
@@ -454,6 +457,114 @@ def _build_video_contents(
     return parts
 
 
+def _normalize_video_inputs(
+    video_paths: list[str], labels: Optional[list[str]]
+) -> tuple[list[str], list[str]]:
+    """Validate and resolve an ordered multi-video request.
+
+    Gemini 2.5+ accepts at most ten videos in one request. Requiring two here
+    keeps ``analyze_videos`` semantically distinct from ``analyze_video``.
+    """
+    if not isinstance(video_paths, list) or not 2 <= len(video_paths) <= 10:
+        count = len(video_paths) if isinstance(video_paths, list) else type(video_paths).__name__
+        raise RuntimeError(
+            "INVALID_INPUT: analyze_videos needs 2 to 10 video paths "
+            f"(got {count})"
+        )
+
+    resolved_paths: list[str] = []
+    for path_str in video_paths:
+        if not isinstance(path_str, str) or not path_str.strip():
+            raise RuntimeError(
+                "INVALID_INPUT: every analyze_videos path must be a non-empty string"
+            )
+        path = Path(path_str).expanduser()
+        if not path.is_file():
+            raise RuntimeError(f"VIDEO_NOT_FOUND: {path_str}")
+        resolved_paths.append(str(path.resolve()))
+
+    if len(set(resolved_paths)) != len(resolved_paths):
+        raise RuntimeError(
+            "INVALID_INPUT: analyze_videos video paths must be distinct"
+        )
+
+    if labels is None:
+        normalized_labels = [Path(path).name for path in resolved_paths]
+    else:
+        if not isinstance(labels, list) or len(labels) != len(resolved_paths):
+            count = len(labels) if isinstance(labels, list) else type(labels).__name__
+            raise RuntimeError(
+                "INVALID_INPUT: labels must contain exactly one entry per video "
+                f"(got {count} labels for {len(resolved_paths)} videos)"
+            )
+        normalized_labels = []
+        for label in labels:
+            if not isinstance(label, str) or not label.strip():
+                raise RuntimeError(
+                    "INVALID_INPUT: every analyze_videos label must be a non-empty string"
+                )
+            normalized_labels.append(label.strip())
+
+    return resolved_paths, normalized_labels
+
+
+def _build_multi_video_contents(
+    *,
+    video_files: list[Any],
+    video_mimes: list[str],
+    video_labels: list[str],
+    prompt: Optional[str],
+    intent: Optional[str],
+    context: Optional[str],
+    base_plate_path: Optional[str],
+    identity_refs: Optional[list[str]],
+    style_refs: Optional[list[str]],
+    fps: Optional[float],
+    image_module: Any,
+    gtypes: Any,
+    question: str,
+) -> list[Any]:
+    """Build one ordered, explicitly labeled multi-video Gemini request."""
+    parts: list[Any] = [
+        prompts.context_block(
+            prompt=prompt, intent=intent, context=context, question=question
+        ),
+    ]
+    if base_plate_path:
+        parts.append(prompts.reference_label("base_plate") + ":")
+        parts.append(gemini_media.load_image(base_plate_path, image_module=image_module))
+    if identity_refs:
+        for idx, ref in enumerate(identity_refs, start=1):
+            parts.append(prompts.reference_label("identity_ref", idx) + ":")
+            parts.append(gemini_media.load_image(ref, image_module=image_module))
+    if style_refs:
+        for idx, ref in enumerate(style_refs, start=1):
+            parts.append(prompts.reference_label("style_ref", idx) + ":")
+            parts.append(gemini_media.load_image(ref, image_module=image_module))
+
+    for idx, (video_file, video_mime, label) in enumerate(
+        zip(video_files, video_mimes, video_labels, strict=True), start=1
+    ):
+        parts.append(f"VIDEO {idx} — {label}:")
+        part_kwargs: dict[str, Any] = {
+            "file_data": gtypes.FileData(
+                file_uri=video_file.uri, mime_type=video_mime
+            ),
+        }
+        if fps is not None:
+            fps_value = int(fps) if fps == int(fps) else fps
+            part_kwargs["video_metadata"] = gtypes.VideoMetadata(
+                fps=fps_value, start_offset="0s"
+            )
+        parts.append(gtypes.Part(**part_kwargs))
+
+    parts.append(
+        "Answer the Question above by referring to each source with its exact "
+        "VIDEO number and label. Keep observations grounded to the correct file."
+    )
+    return parts
+
+
 def _validate_fps(fps: Optional[float]) -> None:
     """Range-check fps (caller passes None when unspecified). Raises
     ``INVALID_INPUT`` for values outside (0, 24] or non-numeric inputs.
@@ -471,6 +582,124 @@ def _validate_fps(fps: Optional[float]) -> None:
         )
 
 
+def _build_audio_contents(
+    *,
+    audio_file: Any,
+    audio_mime: str,
+    prompt: Optional[str],
+    intent: Optional[str],
+    context: Optional[str],
+    question: str,
+    gtypes: Any,
+) -> list[Any]:
+    """Build a free-form Gemini request around one uploaded audio file.
+
+    Unlike ``_build_video_contents``, this intentionally attaches no
+    ``VideoMetadata`` and uses the Files API's detected audio MIME type.
+    """
+    return [
+        prompts.context_block(
+            prompt=prompt, intent=intent, context=context, question=question
+        ),
+        "AUDIO RECORDING to analyze:",
+        gtypes.Part(
+            file_data=gtypes.FileData(
+                file_uri=audio_file.uri,
+                mime_type=audio_mime,
+            )
+        ),
+    ]
+
+
+@mcp.tool()
+def analyze_audio(
+    audio_path: str,
+    question: str,
+    prompt: Optional[str] = None,
+    intent: Optional[str] = None,
+    context: Optional[str] = None,
+    model: str = DEFAULT_AUDIO_ANALYSIS_MODEL,
+    temperature: Optional[float] = None,
+    system_prompt: Optional[str] = None,
+    upload_timeout_s: int = 300,
+) -> dict[str, Any]:
+    """Free-form audio analysis and transcription with Gemini.
+
+    The file is uploaded through Gemini's Files API, polled until ACTIVE,
+    analyzed, and deleted in a ``finally`` block. The Files API's detected
+    MIME type is passed through unchanged, which makes this safe for M4A/AAC
+    recordings that cannot be routed through ``analyze_video``.
+
+    Args:
+        audio_path: Absolute path to a local audio file.
+        question: The analysis or transcription request.
+        prompt: Optional provenance or production prompt.
+        intent: Optional creative or analytical brief.
+        context: Optional per-call notes.
+        model: Gemini model id. Default ``gemini-3.6-flash``.
+        temperature: Optional sampling override; omitted by default.
+        system_prompt: Optional audio-analysis system instruction override.
+        upload_timeout_s: Bounds the Files API upload+processing wait.
+
+    Raises:
+        RuntimeError: ``AUDIO_NOT_FOUND``, ``AUDIO_UPLOAD_FAILED``,
+        ``AUDIO_PROCESSING_TIMEOUT``, ``AUDIO_PROCESSING_FAILED``,
+        ``AUDIO_MIME_MISMATCH``, ``API_KEY_MISSING``, ``INVALID_INPUT``,
+        or ``NO_RESPONSE``.
+    """
+    question_text = _normalize_question(question)
+    path = Path(audio_path).expanduser()
+    if not path.is_file():
+        raise RuntimeError(f"AUDIO_NOT_FOUND: {audio_path}")
+
+    client, gtypes = gemini_media.init_client()
+    uploaded = gemini_media.upload_and_poll_audio(
+        client, audio_path, timeout_s=upload_timeout_s
+    )
+    try:
+        audio_mime = getattr(uploaded, "mime_type", None)
+        if not audio_mime or not str(audio_mime).startswith("audio/"):
+            raise RuntimeError(
+                "AUDIO_MIME_MISMATCH: Gemini Files API returned "
+                f"{audio_mime!r} for {audio_path}"
+            )
+        contents = _build_audio_contents(
+            audio_file=uploaded,
+            audio_mime=str(audio_mime),
+            prompt=prompt,
+            intent=intent,
+            context=context,
+            question=question_text,
+            gtypes=gtypes,
+        )
+        answer = gemini_media.call_unstructured(
+            client=client,
+            gtypes=gtypes,
+            model=model,
+            system_instruction=(
+                system_prompt or prompts.analyze_audio_system_prompt()
+            ),
+            contents=contents,
+            temperature=temperature,
+        )
+    finally:
+        gemini_media.cleanup_uploaded(client, uploaded)
+
+    return {
+        "model": model,
+        "audio_path": str(path.resolve()),
+        "detected_mime_type": str(audio_mime),
+        "question": question_text,
+        "answer": answer,
+        "context_used": {
+            "prompt": prompt,
+            "intent": intent,
+            "context": context,
+            "question": question_text,
+        },
+    }
+
+
 @mcp.tool()
 def describe_video(
     video_path: str,
@@ -481,7 +710,7 @@ def describe_video(
     identity_refs: Optional[list[str]] = None,
     style_refs: Optional[list[str]] = None,
     fps: Optional[float] = None,
-    model: str = DEFAULT_ANALYSIS_MODEL,
+    model: str = DEFAULT_VIDEO_ANALYSIS_MODEL,
     temperature: Optional[float] = None,
     system_prompt: Optional[str] = None,
     upload_timeout_s: int = 300,
@@ -507,7 +736,7 @@ def describe_video(
             the start frame.
         identity_refs: Optional list of character/asset reference paths.
         style_refs: Optional list of style anchor paths.
-        model: Gemini model id. Default ``gemini-3.5-flash``.
+        model: Gemini model id. Default ``gemini-3.6-flash``.
         temperature: Optional sampling override; omitted by default.
         system_prompt: Override the default observation-mode instruction.
         upload_timeout_s: How long to wait for Files API to mark the upload
@@ -585,7 +814,7 @@ def score_video(
     style_refs: Optional[list[str]] = None,
     criteria: Optional[list[str]] = None,
     fps: Optional[float] = None,
-    model: str = DEFAULT_ANALYSIS_MODEL,
+    model: str = DEFAULT_VIDEO_ANALYSIS_MODEL,
     temperature: Optional[float] = None,
     system_prompt: Optional[str] = None,
     upload_timeout_s: int = 300,
@@ -702,7 +931,7 @@ def analyze_video(
     identity_refs: Optional[list[str]] = None,
     style_refs: Optional[list[str]] = None,
     fps: Optional[float] = None,
-    model: str = DEFAULT_ANALYSIS_MODEL,
+    model: str = DEFAULT_VIDEO_ANALYSIS_MODEL,
     temperature: Optional[float] = None,
     system_prompt: Optional[str] = None,
     upload_timeout_s: int = 300,
@@ -726,7 +955,7 @@ def analyze_video(
         style_refs: Optional style anchor paths.
         fps: Sampling rate Gemini uses when reading the video. Default
             None lets Gemini pick (typically 1 fps).
-        model: Gemini model id. Default ``gemini-3.5-flash``.
+        model: Gemini model id. Default ``gemini-3.6-flash``.
         temperature: Optional sampling override; omitted by default.
         system_prompt: Override the default analyze-mode instruction.
         upload_timeout_s: Bounds the Files API upload+process wait.
@@ -795,6 +1024,125 @@ def analyze_video(
 
 
 @mcp.tool()
+def analyze_videos(
+    video_paths: list[str],
+    question: str,
+    labels: Optional[list[str]] = None,
+    prompt: Optional[str] = None,
+    intent: Optional[str] = None,
+    context: Optional[str] = None,
+    base_plate_path: Optional[str] = None,
+    identity_refs: Optional[list[str]] = None,
+    style_refs: Optional[list[str]] = None,
+    fps: Optional[float] = None,
+    model: str = DEFAULT_VIDEO_ANALYSIS_MODEL,
+    temperature: Optional[float] = None,
+    system_prompt: Optional[str] = None,
+    upload_timeout_s: int = 300,
+) -> dict[str, Any]:
+    """Ask one grounded question across two to ten ordered videos.
+
+    Each video is uploaded through Gemini's Files API and inserted into one
+    multimodal request behind an explicit ``VIDEO N — label`` marker. This is
+    intended for edit comparisons, continuity checks, candidate ranking, and
+    other questions whose answer depends on seeing multiple clips together.
+    ``analyze_video`` remains the lower-cost choice for one source.
+
+    Args:
+        video_paths: Ordered list of two to ten distinct local video paths.
+        question: Cross-video question for Gemini to answer.
+        labels: Optional ordered labels. Defaults to each file's basename.
+        prompt: Optional shared generation prompt or editorial instruction.
+        intent: Optional shared creative brief.
+        context: Optional per-call notes.
+        base_plate_path: Optional reference image shared by all videos.
+        identity_refs: Optional shared character/asset image references.
+        style_refs: Optional shared style image references.
+        fps: Sampling rate applied independently to every video. Default None
+            lets Gemini choose; valid explicit range is (0, 24].
+        model: Gemini model id. Default ``gemini-3.6-flash``.
+        temperature: Optional sampling override.
+        system_prompt: Override the default analyze-mode instruction.
+        upload_timeout_s: Per-file Files API processing timeout.
+
+    Returns:
+        The resolved ordered paths and labels, model/fps, original question,
+        free-form answer, and an echo of the evaluation context.
+
+    Raises:
+        RuntimeError: ``INVALID_INPUT`` for list/label/fps errors,
+        ``VIDEO_NOT_FOUND`` for any missing source, Files API errors from any
+        upload, ``API_KEY_MISSING``, or ``NO_RESPONSE``.
+    """
+    question_text = _normalize_question(question)
+    resolved_paths, normalized_labels = _normalize_video_inputs(video_paths, labels)
+    _validate_fps(fps)
+
+    image_module = gemini_media.require_pillow()
+    client, gtypes = gemini_media.init_client()
+    uploaded_files: list[Any] = []
+    video_mimes = [gemini_media.video_mime_type(path) for path in resolved_paths]
+
+    try:
+        for path in resolved_paths:
+            uploaded_files.append(
+                gemini_media.upload_and_poll_video(
+                    client, path, timeout_s=upload_timeout_s
+                )
+            )
+
+        system_instruction = system_prompt or prompts.analyze_video_system_prompt()
+        contents = _build_multi_video_contents(
+            video_files=uploaded_files,
+            video_mimes=video_mimes,
+            video_labels=normalized_labels,
+            prompt=prompt,
+            intent=intent,
+            context=context,
+            base_plate_path=base_plate_path,
+            identity_refs=identity_refs,
+            style_refs=style_refs,
+            fps=fps,
+            image_module=image_module,
+            gtypes=gtypes,
+            question=question_text,
+        )
+
+        answer = gemini_media.call_unstructured(
+            client=client,
+            gtypes=gtypes,
+            model=model,
+            system_instruction=system_instruction,
+            contents=contents,
+            temperature=temperature,
+        )
+    finally:
+        for uploaded in uploaded_files:
+            gemini_media.cleanup_uploaded(client, uploaded)
+
+    context_used = _context_used(
+        prompt=prompt,
+        intent=intent,
+        context=context,
+        base_plate_path=base_plate_path,
+        identity_refs=identity_refs,
+        style_refs=style_refs,
+        question=question_text,
+    )
+    context_used["video_labels"] = normalized_labels
+
+    return {
+        "model": model,
+        "video_paths": resolved_paths,
+        "video_labels": normalized_labels,
+        "fps": fps,
+        "question": question_text,
+        "answer": answer,
+        "context_used": context_used,
+    }
+
+
+@mcp.tool()
 def compare_images(
     image_paths: list[str],
     prompt: str,
@@ -834,7 +1182,7 @@ def compare_images(
             comparison to weight (e.g., "I'm only worried about style_lock
             this round; ignore composition variance").
         criteria: Override the default 6-dim list.
-        model: Gemini model id. Default ``gemini-3.5-flash``.
+        model: Gemini model id. Default ``gemini-3.6-flash``.
         temperature: Optional sampling override; omitted by default.
         system_prompt: Override the default comparison-mode instruction.
 
@@ -933,7 +1281,7 @@ def extract_visual_tokens(
         intent: Optional brief — focuses the extraction (e.g., "I'm only
             interested in tokens relevant to teal-orange grade and
             anamorphic optics, skip color-palette specifics").
-        model: Gemini model id. Default ``gemini-3.5-flash``.
+        model: Gemini model id. Default ``gemini-3.6-flash``.
         temperature: Optional sampling override; omitted by default.
         system_prompt: Override the default extraction instruction.
 

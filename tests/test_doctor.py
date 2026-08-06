@@ -58,6 +58,7 @@ def test_run_all_checks_no_network() -> None:
 def test_run_all_checks_with_network_skipped_when_no_keys(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(doctor, "load_dotenv_if_available", lambda: False)
     monkeypatch.delenv(doctor.GEMINI_KEY, raising=False)
     monkeypatch.delenv(doctor.REPLICATE_TOKEN, raising=False)
     results = doctor.run_all_checks(network=True)

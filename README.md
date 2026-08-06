@@ -4,7 +4,7 @@ Toolkit for the *riff* workflow — iteratively generate, analyze, and refine AI
 
 - `gemini-video-prompts` — the original batch CLI for Gemini image/video generation (still the local entry point for batch runs and dry-runs).
 - `gemini-prompts-mcp` — wraps the CLI as MCP tools (`generate_image` via Gemini, `generate_video` via Replicate-Seedance).
-- `media-analysis-mcp` — Gemini multimodal analysis (`describe_*`, `score_*`, `compare_images`, `extract_visual_tokens`) + ffmpeg-based `extract_video_frames`.
+- `media-analysis-mcp` — Gemini multimodal analysis (`analyze_*`, `describe_*`, `score_*`, `compare_images`, `extract_visual_tokens`) + ffmpeg-based `extract_video_frames`.
 
 The name comes from the `generation-review-loop` skill's vocabulary for iterative prompt work — *the riff loop*: generate → review → extract → iterate. See [`MCP_DESIGN.md`](MCP_DESIGN.md) for the architecture.
 
@@ -22,7 +22,8 @@ Current defaults:
 - CLI video default model: `veo-3.1-fast-generate-preview`
 - CLI/MCP image default model: `gemini-3-pro-image-preview`
 - MCP video default model: `bytedance/seedance-2.0`
-- Media-analysis default model: `gemini-3.5-flash`
+- Media-analysis image default model: `gemini-3.6-flash`
+- Media-analysis video default model: `gemini-3.6-flash`
 
 Model strings remain configurable so a teammate with access to a newer preview
 or provider model can swap it in without editing the code.
@@ -102,11 +103,16 @@ Generation tools:
 - `start_video_job` — starts a Replicate-Seedance prediction and returns `{job_id, prediction_id, status, job_dir}` immediately.
 - `get_video_job` — reads `<out_root>/jobs/<job_id>/status.json`, optionally polls Replicate, and downloads outputs when the prediction succeeds.
 - `cancel_video_job` — cancels a running provider prediction and updates local status.
+- `get_generation` — returns the durable request, status, result, paths, and
+  normalized seed provenance for one async job without polling.
+- `list_generations` — searches current and historical async records by prompt,
+  title, model, status, or job ID.
 
 If you pass a custom `out_root` to `start_video_job`, pass the same `out_root`
-to `get_video_job` / `cancel_video_job`. `start_video_job` can forward a
-`webhook_url` to Replicate, but this repo does not yet include an HTTP webhook
-receiver; polling remains the supported completion path.
+to `get_video_job`, `cancel_video_job`, `get_generation`, and
+`list_generations`. `start_video_job` can forward a `webhook_url` to Replicate,
+but this repo does not yet include an HTTP webhook receiver; polling remains
+the supported completion path.
 
 Run the media-analysis server on stdio:
 
@@ -117,15 +123,19 @@ uv run media-analysis-mcp
 Analysis tools:
 
 - `analyze_image` / `analyze_video` — **preferred default.** Free-form Q&A: pass any question, get a prose answer. Same multimodal plumbing, no response schema.
+- `analyze_audio` — free-form audio Q&A and detailed transcription. Preserves the Files API's detected `audio/*` MIME type, including M4A/AAC files that must not be routed through `analyze_video`. Defaults to `gemini-3.6-flash`.
+- `analyze_videos` — one grounded free-form question across 2–10 ordered,
+  explicitly labeled videos. Useful for edit comparisons, continuity checks,
+  and candidate ranking without first concatenating a review reel.
 - `describe_image` / `describe_video` — structured observation against a fixed taxonomy (8 categories for images, 12 for video). No scoring, no verdict — Claude is the judge. _Under review for deprecation_ — its baked-in taxonomy may not be justified vs. `analyze_*`; prefer `analyze_*` for new work.
 - `score_image` / `score_video` — calibrated 0–100 scoring across criteria (default: the 6 dimensions from `generation-review-loop`). Gemini is the judge.
 - `compare_images` — pick the best of N candidates against criteria; returns `best_index` + reasoning.
 - `extract_visual_tokens` — deconstruct an image into reusable prompt tokens (lighting/atmosphere/palette/materials/spatial_grammar by default).
 - `extract_video_frames` — ffmpeg-based frame extraction at custom timestamps; useful for feeding stills back into image tools.
 
-All Gemini analysis tools share one default model (`gemini-3.5-flash`) and an
-opt-in `temperature` (omitted unless you pass one — each model uses its own
-tuned default).
+All Gemini image-, video-, and audio-analysis tools default to
+`gemini-3.6-flash`. All retain an opt-in `temperature`
+(omitted unless you pass one — each model uses its own tuned default).
 
 #### When to use which: `analyze_*` vs `describe_*`
 
@@ -197,8 +207,12 @@ add the tools to a `permissions.allow` list. For a global setup put it in
       "mcp__gemini-prompts__generate_image",
       "mcp__gemini-prompts__start_video_job",
       "mcp__gemini-prompts__get_video_job",
+      "mcp__gemini-prompts__get_generation",
+      "mcp__gemini-prompts__list_generations",
       "mcp__media-analysis__analyze_image",
       "mcp__media-analysis__analyze_video",
+      "mcp__media-analysis__analyze_audio",
+      "mcp__media-analysis__analyze_videos",
       "mcp__media-analysis__score_image",
       "mcp__media-analysis__compare_images",
       "mcp__media-analysis__extract_visual_tokens",
@@ -207,6 +221,12 @@ add the tools to a `permissions.allow` list. For a global setup put it in
   }
 }
 ```
+
+`get_generation` and `list_generations` are trusted-local provenance tools.
+Allowlisting them lets an agent read prompts, absolute reference/output paths,
+raw provider responses, and temporary provider URLs across the selected output
+root. Grant that access only to trusted local clients, and never place API
+tokens or other credentials inside prompts or provider parameters.
 
 The entry format is `mcp__<server-name>__<tool-name>`, where `<server-name>`
 matches the key you registered above. List only the tools you want
@@ -426,7 +446,18 @@ uv run gemini-video-prompts my_prompts.dat --format yaml
   and polled until complete in the standalone CLI.
 - MCP `generate_video` uses Replicate-Seedance, requires `REPLICATE_API_TOKEN`,
   and blocks until the prediction completes or times out.
+- Blocking `generate_video` can preserve a seed supplied by the caller, but
+  Replicate's blocking helper does not expose the prediction log needed to
+  recover an auto-selected seed. Use `start_video_job` + `get_video_job` when
+  complete provider-observed seed provenance matters.
 - MCP async video jobs write durable status files under `<out_root>/jobs/`.
+  Each request has a stable `generation_id` equal to its `job_id`; completed
+  provider-selected seeds are normalized into `seed_provenance.effective_seed`.
+  Reference and downloaded output records include byte size and SHA-256.
+  Reference digests are calculated from the same opened file streams passed to
+  the provider; output digests are calculated from the downloaded files.
+  Lifecycle summaries append to `<out_root>/jobs/index.ndjson`, while
+  `list_generations` also discovers pre-index `status.json` records.
   The generated media still lands under the normal dated output layout, with
   the async `job_id` appended to avoid collisions between identical prompts.
 - Image generation uses the standard `generate_content(...)` flow: text (and
@@ -446,6 +477,22 @@ uv run gemini-video-prompts my_prompts.dat --format yaml
 
 This project follows [semantic versioning](https://semver.org/). The current
 version is set in [`pyproject.toml`](pyproject.toml).
+
+### Unreleased
+
+- **Durable Seedance provenance** — async generation records now distinguish
+  requested and effective seeds, recover provider-selected seeds from Replicate
+  prediction logs, hash reference/output artifacts, append idempotent lifecycle
+  summaries to `jobs/index.ndjson`, and expose `get_generation` /
+  `list_generations` for MCP retrieval.
+- **Gemini 3.6 Flash for media analysis** — image, video, multi-video, and
+  audio analysis tools now share the `gemini-3.6-flash` default.
+- **Native multi-video analysis** — `analyze_videos` accepts 2–10 distinct
+  local videos plus optional ordered labels, uploads them into one Gemini
+  request, and cleans up every Files API resource even after partial failure.
+- **Native audio analysis** — `analyze_audio` preserves the Files API's
+  detected `audio/*` MIME type for free-form analysis and transcription,
+  including M4A/AAC recordings that must not be routed as video.
 
 ### 0.2.0
 

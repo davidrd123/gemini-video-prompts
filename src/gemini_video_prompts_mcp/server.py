@@ -5,15 +5,21 @@ Tools:
 - generate_video  — Seedance 2.0 via Replicate (uses seedance.py adapter)
 - start_video_job, get_video_job, cancel_video_job
                   — local async control surface for Seedance predictions
+- get_generation, list_generations
+                  — durable provenance retrieval and search
 
 See MCP_DESIGN.md at the repo root for the full architecture.
 """
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
+import os
 import re
+import threading
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Optional
 
@@ -36,6 +42,11 @@ from gemini_video_prompts.cli import (
 from . import seedance
 from .seedance import SEEDANCE_MODEL_DEFAULT
 
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows fallback uses thread locks only
+    fcntl = None  # type: ignore[assignment]
+
 
 mcp = FastMCP("gemini-prompts-mcp")
 
@@ -44,6 +55,8 @@ mcp = FastMCP("gemini-prompts-mcp")
 # instead of double-wrapping them as REPLICATE_ERROR: REPLICATE_TIMEOUT: ...
 _CODED_PREFIX_RE = re.compile(r"^[A-Z][A-Z0-9_]+:")
 _TERMINAL_PREDICTION_STATUSES = {"succeeded", "failed", "canceled"}
+_JOB_LOCKS_GUARD = threading.Lock()
+_JOB_LOCKS: dict[str, threading.Lock] = {}
 
 
 def _project_job_dir(job: dict[str, Any]) -> str:
@@ -105,6 +118,51 @@ def _job_request_path(out_root: Path, job_id: str) -> Path:
     return _jobs_root(out_root) / job_id / "request.json"
 
 
+def _generation_index_path(out_root: Path) -> Path:
+    return _jobs_root(out_root) / "index.ndjson"
+
+
+@contextmanager
+def _job_finalize_lock(out_root: Path, job_id: str):
+    """Serialize finalization within this process and across Unix processes."""
+    lock_key = str(_job_status_path(out_root, job_id).resolve())
+    with _JOB_LOCKS_GUARD:
+        thread_lock = _JOB_LOCKS.setdefault(lock_key, threading.Lock())
+
+    with thread_lock:
+        lock_path = _jobs_root(out_root) / job_id / ".finalize.lock"
+        ensure_dir(lock_path.parent)
+        with lock_path.open("a+", encoding="utf-8") as lock_file:
+            if fcntl is not None:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                if fcntl is not None:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+@contextmanager
+def _generation_index_write_lock(out_root: Path):
+    """Serialize writes to the shared generation index."""
+    index_path = _generation_index_path(out_root)
+    lock_key = str(index_path.resolve())
+    with _JOB_LOCKS_GUARD:
+        thread_lock = _JOB_LOCKS.setdefault(lock_key, threading.Lock())
+
+    with thread_lock:
+        lock_path = _jobs_root(out_root) / ".index.lock"
+        ensure_dir(lock_path.parent)
+        with lock_path.open("a+", encoding="utf-8") as lock_file:
+            if fcntl is not None:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                if fcntl is not None:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
 def _read_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -112,6 +170,209 @@ def _read_json(path: Path) -> dict[str, Any]:
 def _write_status(out_root: Path, job_id: str, status: dict[str, Any]) -> None:
     status["updated_at"] = now_iso()
     write_json(_job_status_path(out_root, job_id), status)
+
+
+def _file_identity(path: str) -> dict[str, Any]:
+    file_path = Path(path)
+    digest = hashlib.sha256()
+    with file_path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return {
+        "bytes": file_path.stat().st_size,
+        "sha256": digest.hexdigest(),
+    }
+
+
+def _apply_reference_provenance(
+    references: list[dict[str, Any]],
+    identities: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    enriched: list[dict[str, Any]] = []
+    for reference in references:
+        record = dict(reference)
+        path = str(Path(str(record.get("path"))).expanduser().resolve())
+        identity = identities.get(path)
+        if identity is not None:
+            record.update(identity)
+        else:
+            try:
+                record.update(_file_identity(path))
+                record["hash_source"] = "post_submission_path_fallback"
+            except OSError as exc:
+                raise RuntimeError(f"FILE_HASH_FAILED: {path}: {exc}") from exc
+        enriched.append(record)
+    return enriched
+
+
+def _enrich_output_provenance(output: dict[str, Any]) -> dict[str, Any]:
+    record = dict(output)
+    path = record.get("path")
+    if not path:
+        return record
+    try:
+        record.update(_file_identity(str(path)))
+        record["hash_source"] = "downloaded_output_file"
+    except OSError as exc:
+        record["provenance_warning"] = f"could not hash output {path}: {exc}"
+    return record
+
+
+def _seed_provenance_from_status(
+    status: dict[str, Any], prediction: Optional[dict[str, Any]] = None
+) -> dict[str, Any]:
+    prior = status.get("seed_provenance")
+    requested_seed = (
+        prior.get("requested_seed")
+        if isinstance(prior, dict)
+        else (status.get("resolved_params") or {}).get("seed")
+    )
+    return seedance.resolve_seed_provenance(
+        requested_seed=requested_seed,
+        prediction=prediction,
+    )
+
+
+def _generation_index_entry(
+    status: dict[str, Any], *, event: str
+) -> dict[str, Any]:
+    result = status.get("result") if isinstance(status.get("result"), dict) else {}
+    outputs = result.get("outputs") if isinstance(result, dict) else []
+    references = status.get("references") or []
+    output_paths = [
+        output.get("path")
+        for output in (outputs or [])
+        if isinstance(output, dict) and output.get("path")
+    ]
+    reference_files = [
+        {
+            key: reference.get(key)
+            for key in (
+                "token",
+                "role",
+                "path",
+                "bytes",
+                "sha256",
+                "hash_source",
+            )
+        }
+        for reference in references
+        if isinstance(reference, dict)
+    ]
+    output_files = [
+        {
+            key: output.get(key)
+            for key in ("index", "path", "bytes", "sha256", "hash_source")
+        }
+        for output in (outputs or [])
+        if isinstance(output, dict)
+    ]
+    return {
+        "schema_version": 1,
+        "event": event,
+        "indexed_at": now_iso(),
+        "generation_id": status["job_id"],
+        "job_id": status["job_id"],
+        "prediction_id": status.get("prediction_id"),
+        "provider": status.get("provider"),
+        "status": status.get("status"),
+        "created_at": status.get("created_at"),
+        "started_at": status.get("started_at"),
+        "completed_at": status.get("completed_at"),
+        "title": status.get("title"),
+        "model": status.get("model"),
+        "mode": status.get("mode"),
+        "prompt": status.get("prompt"),
+        "resolved_params": status.get("resolved_params"),
+        "seed_provenance": status.get("seed_provenance"),
+        "reference_count": len(references),
+        "reference_files": reference_files,
+        "job_dir": status.get("job_dir"),
+        "output_paths": output_paths,
+        "output_files": output_files,
+    }
+
+
+def _ensure_generation_index_line_boundary(index_path: Path) -> None:
+    """Keep a crash-truncated tail from swallowing the next NDJSON event."""
+    if not index_path.is_file() or index_path.stat().st_size == 0:
+        return
+    with index_path.open("rb+") as handle:
+        handle.seek(-1, os.SEEK_END)
+        if handle.read(1) == b"\n":
+            return
+        handle.seek(0, os.SEEK_END)
+        handle.write(b"\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+def _append_generation_index(
+    out_root: Path, status: dict[str, Any], *, event: str
+) -> Optional[str]:
+    index_path = _generation_index_path(out_root)
+    marker_path = (
+        _jobs_root(out_root) / status["job_id"] / f".index-event-{event}"
+    )
+    try:
+        with _generation_index_write_lock(out_root):
+            _ensure_generation_index_line_boundary(index_path)
+            entries, _ = _read_generation_index(out_root)
+            already_indexed = any(
+                entry.get("job_id") == status["job_id"]
+                and entry.get("event") == event
+                for entry in entries
+            )
+            if not already_indexed:
+                entry = _generation_index_entry(status, event=event)
+                with index_path.open("a", encoding="utf-8") as handle:
+                    handle.write(
+                        json.dumps(entry, ensure_ascii=False, sort_keys=True)
+                        + "\n"
+                    )
+                    handle.flush()
+                    os.fsync(handle.fileno())
+
+            ensure_dir(marker_path.parent)
+            if not marker_path.exists():
+                with marker_path.open("x", encoding="utf-8") as marker:
+                    marker.write(now_iso() + "\n")
+                    marker.flush()
+                    os.fsync(marker.fileno())
+    except (OSError, TypeError, ValueError) as exc:
+        return f"could not append {event} event to {index_path}: {exc}"
+    return None
+
+
+def _append_generation_index_safely(
+    out_root: Path, status: dict[str, Any], *, event: str
+) -> None:
+    warning = _append_generation_index(out_root, status, event=event)
+    if warning:
+        status.setdefault("provenance_warnings", []).append(warning)
+
+
+def _read_generation_index(out_root: Path) -> tuple[list[dict[str, Any]], list[str]]:
+    index_path = _generation_index_path(out_root)
+    if not index_path.is_file():
+        return [], []
+
+    entries: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    for line_number, raw_line in enumerate(
+        index_path.read_text(encoding="utf-8", errors="replace").splitlines(),
+        start=1,
+    ):
+        if not raw_line.strip():
+            continue
+        try:
+            entry = json.loads(raw_line)
+        except json.JSONDecodeError as exc:
+            warnings.append(f"index line {line_number} is invalid JSON: {exc}")
+            continue
+        if isinstance(entry, dict) and entry.get("job_id"):
+            entries.append(entry)
+    return entries, warnings
 
 
 def _build_video_context(
@@ -199,7 +460,6 @@ def _check_video_files(api_params: dict[str, Any]) -> None:
             if not Path(path_val).is_file():
                 raise RuntimeError(f"FILE_NOT_FOUND: {path_val}")
 
-
 def _prediction_status(prediction: dict[str, Any]) -> str:
     return str(prediction.get("status") or "unknown")
 
@@ -249,7 +509,7 @@ def _result_from_prediction(
 
     enriched_outputs: list[dict[str, Any]] = []
     for idx, out in enumerate(outputs, start=1):
-        out_clean = dict(out)
+        out_clean = _enrich_output_provenance(out)
         out_clean.pop("_metrics", None)
         out_clean["index"] = idx
         out_clean["media_info"] = seedance.probe_media_info(out_clean["path"])
@@ -257,6 +517,7 @@ def _result_from_prediction(
 
     return {
         "status": "ok",
+        "generation_id": status["job_id"],
         "created_at": now_iso(),
         "started_at": prediction.get("started_at") or status.get("started_at"),
         "completed_at": prediction.get("completed_at"),
@@ -267,6 +528,7 @@ def _result_from_prediction(
         "mode": status["mode"],
         "prompt": status["prompt"],
         "resolved_params": status["resolved_params"],
+        "seed_provenance": status["seed_provenance"],
         "references": status["references"],
         "validation_warnings": status["validation_warnings"],
         "job_dir": status["job_dir"],
@@ -275,7 +537,7 @@ def _result_from_prediction(
     }
 
 
-def _merge_prediction_status(
+def _merge_prediction_status_unlocked(
     *,
     status: dict[str, Any],
     prediction: dict[str, Any],
@@ -285,6 +547,7 @@ def _merge_prediction_status(
     status["status"] = provider_status
     status["provider_prediction"] = prediction
     status["error"] = _prediction_error(prediction)
+    status["seed_provenance"] = _seed_provenance_from_status(status, prediction)
     if prediction.get("started_at"):
         status["started_at"] = prediction["started_at"]
     if prediction.get("completed_at"):
@@ -298,8 +561,35 @@ def _merge_prediction_status(
     elif provider_status in {"failed", "canceled"}:
         status["outputs_downloaded"] = False
 
+    if provider_status in _TERMINAL_PREDICTION_STATUSES:
+        _append_generation_index_safely(out_root, status, event=provider_status)
+
     _write_status(out_root, status["job_id"], status)
     return status
+
+
+def _merge_prediction_status(
+    *,
+    status: dict[str, Any],
+    prediction: dict[str, Any],
+    out_root: Path,
+) -> dict[str, Any]:
+    job_id = status["job_id"]
+    with _job_finalize_lock(out_root, job_id):
+        status_path = _job_status_path(out_root, job_id)
+        if status_path.is_file():
+            persisted = _read_json(status_path)
+            persisted_state = persisted.get("status")
+            if persisted_state in _TERMINAL_PREDICTION_STATUSES:
+                if persisted_state != "succeeded" or persisted.get("result"):
+                    return persisted
+            status = persisted
+
+        return _merge_prediction_status_unlocked(
+            status=status,
+            prediction=prediction,
+            out_root=out_root,
+        )
 
 
 def _load_async_video_status(job_id: str, out_root: Optional[str]) -> tuple[Path, dict[str, Any]]:
@@ -532,6 +822,9 @@ def generate_video(
             "mode": mode,
             "prompt": prompt.strip(),
             "resolved_params": resolved_params,
+            "seed_provenance": seedance.resolve_seed_provenance(
+                requested_seed=seed
+            ),
             "references": references,
             "validation_warnings": validation_warnings,
             "projected_job_dir": _project_video_job_dir(
@@ -568,6 +861,10 @@ def generate_video(
         timeout_s=timeout_s,
         model_ref=model,
     )
+    references = _apply_reference_provenance(
+        references,
+        sidecar.pop("reference_file_identities", {}),
+    )
 
     if not sidecar.get("success"):
         err = sidecar.get("error") or {}
@@ -583,7 +880,7 @@ def generate_video(
     # Enrich each output with ffprobe-derived media_info; strip internal _metrics
     enriched_outputs: list[dict[str, Any]] = []
     for idx, out in enumerate(sidecar.get("outputs", []), start=1):
-        out_clean = dict(out)
+        out_clean = _enrich_output_provenance(out)
         out_clean.pop("_metrics", None)
         out_clean["index"] = idx
         out_clean["media_info"] = seedance.probe_media_info(out_clean["path"])
@@ -599,6 +896,9 @@ def generate_video(
         "mode": mode,
         "prompt": prompt.strip(),
         "resolved_params": resolved_params,
+        "seed_provenance": seedance.resolve_seed_provenance(
+            requested_seed=seed
+        ),
         "references": references,
         "validation_warnings": validation_warnings,
         "job_dir": str(job_dir),
@@ -666,6 +966,7 @@ def start_video_job(
 
     request = {
         "job_id": job_id,
+        "generation_id": job_id,
         "created_at": now_iso(),
         "provider": "replicate",
         "tool": "start_video_job",
@@ -673,6 +974,9 @@ def start_video_job(
         "mode": ctx["mode"],
         "prompt": prompt.strip(),
         "resolved_params": ctx["resolved_params"],
+        "seed_provenance": seedance.resolve_seed_provenance(
+            requested_seed=ctx["resolved_params"].get("seed")
+        ),
         "provider_params": api_params,
         "references": ctx["references"],
         "validation_warnings": ctx["validation_warnings"],
@@ -685,6 +989,11 @@ def start_video_job(
         webhook_url=webhook_url,
         webhook_events_filter=["completed"] if webhook_url else None,
     )
+    ctx["references"] = _apply_reference_provenance(
+        ctx["references"],
+        prediction.pop("_reference_file_identities", {}),
+    )
+    request["references"] = ctx["references"]
     prediction_id = prediction.get("id")
     if not prediction_id:
         raise RuntimeError("REPLICATE_ERROR: prediction create returned no id")
@@ -696,6 +1005,7 @@ def start_video_job(
     status = {
         "status": _prediction_status(prediction),
         "job_id": job_id,
+        "generation_id": job_id,
         "prediction_id": prediction_id,
         "provider": "replicate",
         "created_at": request["created_at"],
@@ -707,6 +1017,10 @@ def start_video_job(
         "mode": ctx["mode"],
         "prompt": prompt.strip(),
         "resolved_params": ctx["resolved_params"],
+        "seed_provenance": seedance.resolve_seed_provenance(
+            requested_seed=ctx["resolved_params"].get("seed"),
+            prediction=prediction,
+        ),
         "references": ctx["references"],
         "validation_warnings": ctx["validation_warnings"],
         "job_dir": str(job_dir),
@@ -716,6 +1030,7 @@ def start_video_job(
         "error": _prediction_error(prediction),
         "provider_prediction": prediction,
     }
+    _append_generation_index_safely(out_root_path, status, event="created")
     _write_status(out_root_path, job_id, status)
     return status
 
@@ -776,6 +1091,120 @@ def cancel_video_job(
         prediction=prediction,
         out_root=out_root_path,
     )
+
+
+@mcp.tool()
+def get_generation(
+    job_id: str,
+    out_root: Optional[str] = None,
+) -> dict[str, Any]:
+    """Return the durable request, status, and result records for one job.
+
+    This is a read-only provenance lookup. It never polls the provider or
+    modifies the generation. For a running job, ``result`` remains ``None``;
+    call ``get_video_job`` first when provider polling is desired.
+    """
+    out_root_path, status = _load_async_video_status(job_id, out_root)
+    request_path = _job_request_path(out_root_path, job_id)
+    request = _read_json(request_path) if request_path.is_file() else None
+
+    job_path = Path(status["job_dir"]) / "job.json"
+    result = status.get("result")
+    if result is None and job_path.is_file():
+        result = _read_json(job_path)
+
+    return {
+        "generation_id": job_id,
+        "job_id": job_id,
+        "state": status.get("status"),
+        "seed_provenance": status.get("seed_provenance")
+        or _seed_provenance_from_status(
+            status,
+            status.get("provider_prediction"),
+        ),
+        "request": request,
+        "status_record": status,
+        "result": result,
+        "paths": {
+            "request": str(request_path) if request_path.is_file() else None,
+            "status": str(_job_status_path(out_root_path, job_id)),
+            "result": str(job_path) if job_path.is_file() else None,
+        },
+    }
+
+
+@mcp.tool()
+def list_generations(
+    out_root: Optional[str] = None,
+    query: Optional[str] = None,
+    status_filter: Optional[str] = None,
+    limit: int = 50,
+) -> dict[str, Any]:
+    """List and search durable async generation records.
+
+    New jobs append lifecycle summaries to ``jobs/index.ndjson``. The lookup
+    also scans existing ``jobs/*/status.json`` records so generations created
+    before the index existed are immediately discoverable.
+    """
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 200:
+        raise RuntimeError("INVALID_INPUT: limit must be an integer in [1, 200]")
+
+    out_root_path = resolve_output_root(out_root) if out_root else resolve_output_root("out")
+    entries, warnings = _read_generation_index(out_root_path)
+    latest_by_job: dict[str, dict[str, Any]] = {}
+    for entry in entries:
+        latest_by_job[str(entry["job_id"])] = entry
+
+    jobs_root = _jobs_root(out_root_path)
+    if jobs_root.is_dir():
+        for status_path in sorted(jobs_root.glob("*/status.json")):
+            try:
+                status = _read_json(status_path)
+                if not isinstance(status.get("seed_provenance"), dict):
+                    status["seed_provenance"] = _seed_provenance_from_status(
+                        status,
+                        status.get("provider_prediction"),
+                    )
+                entry = _generation_index_entry(status, event="snapshot")
+                entry["indexed_at"] = status.get("updated_at")
+                latest_by_job[str(entry["job_id"])] = entry
+            except (OSError, ValueError, KeyError) as exc:
+                warnings.append(f"could not read {status_path}: {exc}")
+
+    generations = list(latest_by_job.values())
+    if status_filter:
+        normalized_status = status_filter.strip().casefold()
+        generations = [
+            item
+            for item in generations
+            if str(item.get("status") or "").casefold() == normalized_status
+        ]
+    if query and query.strip():
+        needle = query.strip().casefold()
+        generations = [
+            item
+            for item in generations
+            if needle in json.dumps(item, ensure_ascii=False).casefold()
+        ]
+
+    generations.sort(
+        key=lambda item: str(
+            item.get("completed_at")
+            or item.get("started_at")
+            or item.get("created_at")
+            or ""
+        ),
+        reverse=True,
+    )
+    total = len(generations)
+    generations = generations[:limit]
+    return {
+        "index_path": str(_generation_index_path(out_root_path)),
+        "total": total,
+        "count": len(generations),
+        "generations": generations,
+        "warnings": warnings,
+    }
 
 
 def main() -> None:

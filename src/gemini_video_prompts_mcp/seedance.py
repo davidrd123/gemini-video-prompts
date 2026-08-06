@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import struct
 import subprocess
 from contextlib import contextmanager
@@ -45,10 +46,60 @@ MAX_REFERENCE_AUDIOS = 3
 # Per-type caps sum to 15 (9+3+3); 12 is the production-practice ceiling.
 TOTAL_REFERENCE_WARNING_CAP = 12
 
+_SEED_LOG_RE = re.compile(r"\bUsing seed:\s*(-?\d+)\b", re.IGNORECASE)
+
 
 # --------------------------------------------------------------------------- #
 # Pure functions                                                              #
 # --------------------------------------------------------------------------- #
+
+
+def resolve_seed_provenance(
+    *,
+    requested_seed: Optional[int],
+    prediction: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """Normalize the requested and provider-observed Seedance seed.
+
+    Replicate echoes explicit seeds in ``prediction.input.seed``. When the
+    caller leaves the seed unset, Seedance currently reports its generated
+    value in a ``Using seed: N`` log line. Keep the source explicit so callers
+    can distinguish a submitted parameter from a value recovered after the
+    prediction completed.
+    """
+    provider_seed: Optional[int] = None
+    source = "unavailable"
+    prediction = prediction or {}
+
+    logs = prediction.get("logs")
+    if isinstance(logs, str):
+        match = _SEED_LOG_RE.search(logs)
+        if match:
+            provider_seed = int(match.group(1))
+            source = "provider_logs"
+
+    if provider_seed is None:
+        prediction_input = prediction.get("input")
+        if isinstance(prediction_input, dict):
+            raw_seed = prediction_input.get("seed")
+            if isinstance(raw_seed, int) and not isinstance(raw_seed, bool):
+                provider_seed = raw_seed
+                source = "provider_input"
+
+    if provider_seed is None and requested_seed is not None:
+        provider_seed = requested_seed
+        source = "request"
+
+    matches_requested: Optional[bool] = None
+    if requested_seed is not None and provider_seed is not None:
+        matches_requested = requested_seed == provider_seed
+
+    return {
+        "requested_seed": requested_seed,
+        "effective_seed": provider_seed,
+        "source": source,
+        "matches_requested": matches_requested,
+    }
 
 
 def derive_mode(
@@ -591,8 +642,10 @@ def assert_reference_aspect_ratios(
 
 
 @contextmanager
-def _open_seedance_file_handles(api_params: dict[str, Any]) -> Iterator[dict[str, Any]]:
-    """Yield Replicate params with Seedance path fields opened as binary files.
+def _open_seedance_file_handles(
+    api_params: dict[str, Any],
+) -> Iterator[tuple[dict[str, Any], dict[str, dict[str, Any]]]]:
+    """Yield open Replicate params plus identities of those exact streams.
 
     Runs ``assert_reference_aspect_ratios`` first as a fail-fast pre-flight, so an
     off-ratio reference is rejected locally before any upload rather than ~30-60s
@@ -601,39 +654,48 @@ def _open_seedance_file_handles(api_params: dict[str, Any]) -> Iterator[dict[str
     """
     assert_reference_aspect_ratios(api_params)
     open_handles: list[Any] = []
+    identities: dict[str, dict[str, Any]] = {}
     params = dict(api_params)
+
+    def open_identified(path_str: str):
+        handle = open(path_str, "rb")
+        open_handles.append(handle)
+        digest = hashlib.sha256()
+        byte_count = 0
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+            byte_count += len(chunk)
+        handle.seek(0)
+        identities[str(Path(path_str).expanduser().resolve())] = {
+            "bytes": byte_count,
+            "sha256": digest.hexdigest(),
+            "hash_source": "uploaded_file_stream",
+        }
+        return handle
 
     try:
         if "image" in params:
-            f = open(params["image"], "rb")
-            open_handles.append(f)
-            params["image"] = f
+            params["image"] = open_identified(params["image"])
         if "last_frame_image" in params:
-            f = open(params["last_frame_image"], "rb")
-            open_handles.append(f)
-            params["last_frame_image"] = f
+            params["last_frame_image"] = open_identified(
+                params["last_frame_image"]
+            )
         if "reference_images" in params:
             opened: list[Any] = []
             for path_str in params["reference_images"]:
-                f = open(path_str, "rb")
-                open_handles.append(f)
-                opened.append(f)
+                opened.append(open_identified(path_str))
             params["reference_images"] = opened
         if "reference_videos" in params:
             opened = []
             for path_str in params["reference_videos"]:
-                f = open(path_str, "rb")
-                open_handles.append(f)
-                opened.append(f)
+                opened.append(open_identified(path_str))
             params["reference_videos"] = opened
         if "reference_audios" in params:
             opened = []
             for path_str in params["reference_audios"]:
-                f = open(path_str, "rb")
-                open_handles.append(f)
-                opened.append(f)
+                opened.append(open_identified(path_str))
             params["reference_audios"] = opened
-        yield params
+        yield params, identities
     finally:
         for handle in open_handles:
             try:
@@ -664,7 +726,7 @@ def run_seedance_job(
     ``reference_images``, ``reference_videos``, ``reference_audios`` and
     would leak as file handles into returned JSON without this step.
     """
-    with _open_seedance_file_handles(api_params) as params:
+    with _open_seedance_file_handles(api_params) as (params, identities):
         sidecar = replicate_min.generate(
             model_ref=model_ref,
             params=params,
@@ -677,6 +739,7 @@ def run_seedance_job(
     # string-path dict the caller passed in.
     sidecar["inputs"] = dict(return_params)
     sidecar["resolved_params"] = dict(return_params)
+    sidecar["reference_file_identities"] = identities
     return sidecar
 
 
@@ -688,13 +751,15 @@ def create_seedance_prediction(
     webhook_events_filter: Optional[list[str]] = None,
 ) -> dict[str, Any]:
     """Create a Seedance prediction without waiting for completion."""
-    with _open_seedance_file_handles(api_params) as params:
-        return replicate_min.create_prediction(
+    with _open_seedance_file_handles(api_params) as (params, identities):
+        prediction = replicate_min.create_prediction(
             model_ref=model_ref,
             params=params,
             webhook_url=webhook_url,
             webhook_events_filter=webhook_events_filter,
         )
+    prediction["_reference_file_identities"] = identities
+    return prediction
 
 
 def get_seedance_prediction(prediction_id: str) -> dict[str, Any]:
