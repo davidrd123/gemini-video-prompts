@@ -1,8 +1,25 @@
+import inspect
 from pathlib import Path
 
 import pytest
 
 from media_analysis_mcp import schemas, server
+
+
+@pytest.mark.parametrize(
+    "tool",
+    [
+        server.analyze_image,
+        server.describe_image,
+        server.score_image,
+        server.compare_images,
+        server.extract_visual_tokens,
+    ],
+)
+def test_all_image_analysis_tools_default_to_gemini_3_6_flash(tool) -> None:
+    default = inspect.signature(tool).parameters["model"].default
+    assert server.DEFAULT_ANALYSIS_MODEL == "gemini-3.6-flash"
+    assert default == server.DEFAULT_ANALYSIS_MODEL
 
 
 class _FakeClient:

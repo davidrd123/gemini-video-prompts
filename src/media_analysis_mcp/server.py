@@ -25,9 +25,9 @@ from . import ffmpeg_utils, gemini_media, prompts, schemas
 
 
 mcp = FastMCP("media-analysis-mcp")
-DEFAULT_ANALYSIS_MODEL = "gemini-3.5-flash"
-DEFAULT_VIDEO_ANALYSIS_MODEL = "gemini-3.6-flash"
-DEFAULT_AUDIO_ANALYSIS_MODEL = "gemini-3.6-flash"
+DEFAULT_ANALYSIS_MODEL = "gemini-3.6-flash"
+DEFAULT_VIDEO_ANALYSIS_MODEL = DEFAULT_ANALYSIS_MODEL
+DEFAULT_AUDIO_ANALYSIS_MODEL = DEFAULT_ANALYSIS_MODEL
 
 
 def _build_image_contents(
@@ -139,7 +139,7 @@ def describe_image(
         identity_refs: Optional list of character/asset reference paths.
             Useful for evaluating identity carry-through across shot types.
         style_refs: Optional list of style anchor paths.
-        model: Gemini model id. Default ``gemini-3.5-flash``.
+        model: Gemini model id. Default ``gemini-3.6-flash``.
         temperature: Optional sampling override; omitted by default.
         system_prompt: Override the default observation-mode system
             instruction. Rare.
@@ -228,7 +228,7 @@ def score_image(
         style_refs: References for style_lock dim.
         criteria: Override the default 6-dim list. Each entry becomes one
             evaluation in the response.
-        model: Gemini model id. Default ``gemini-3.5-flash``.
+        model: Gemini model id. Default ``gemini-3.6-flash``.
         temperature: Optional sampling override; omitted by default.
         system_prompt: Override the default scoring-mode system
             instruction. Rare.
@@ -345,7 +345,7 @@ def analyze_image(
         base_plate_path: Optional reference image (source plate).
         identity_refs: Optional character/asset reference paths.
         style_refs: Optional style anchor paths.
-        model: Gemini model id. Default ``gemini-3.5-flash``.
+        model: Gemini model id. Default ``gemini-3.6-flash``.
         temperature: Optional sampling override; omitted by default.
         system_prompt: Override the default analyze-mode instruction.
 
@@ -1182,7 +1182,7 @@ def compare_images(
             comparison to weight (e.g., "I'm only worried about style_lock
             this round; ignore composition variance").
         criteria: Override the default 6-dim list.
-        model: Gemini model id. Default ``gemini-3.5-flash``.
+        model: Gemini model id. Default ``gemini-3.6-flash``.
         temperature: Optional sampling override; omitted by default.
         system_prompt: Override the default comparison-mode instruction.
 
@@ -1281,7 +1281,7 @@ def extract_visual_tokens(
         intent: Optional brief — focuses the extraction (e.g., "I'm only
             interested in tokens relevant to teal-orange grade and
             anamorphic optics, skip color-palette specifics").
-        model: Gemini model id. Default ``gemini-3.5-flash``.
+        model: Gemini model id. Default ``gemini-3.6-flash``.
         temperature: Optional sampling override; omitted by default.
         system_prompt: Override the default extraction instruction.
 
