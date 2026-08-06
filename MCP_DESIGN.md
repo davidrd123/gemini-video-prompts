@@ -536,8 +536,10 @@ System dep: `ffmpeg` + `ffprobe` (`brew install ffmpeg` on Mac). README document
 |------|---------------|---------|-------------|
 | `describe_image` | `gemini-3.5-flash` | Rich structured observations of one image; no scores | **Claude** — consumes the description, applies the rubric herself |
 | `score_image` | `gemini-3.5-flash` | 6-dim scored eval of one image; advisory `decision_hint` | **Gemini** — Claude can override |
-| `describe_video` | `gemini-3.5-flash` | Rich structured observations of one video; video-aware fields | **Claude** |
-| `score_video` | `gemini-3.5-flash` | 6-dim scored eval of one video, dims adapted per skill SKILL.md:290-300 | **Gemini** |
+| `describe_video` | `gemini-3.6-flash` | Rich structured observations of one video; video-aware fields | **Claude** |
+| `score_video` | `gemini-3.6-flash` | 6-dim scored eval of one video, dims adapted per skill SKILL.md:290-300 | **Gemini** |
+| `analyze_videos` | `gemini-3.6-flash` | Free-form cross-video question over 2–10 ordered, labeled videos | **Claude** |
+| `analyze_audio` | `gemini-3.6-flash` | Free-form auditory analysis or transcription of one recording | **Claude** |
 | `compare_images` | `gemini-3.5-flash` | "Which is better"; pick + reasoning | **Gemini** |
 | `extract_visual_tokens` | `gemini-3.5-flash` | Categorized token deconstruct for env-coverage genesis workflow | **Gemini (descriptive)** |
 | `extract_video_frames` | — (no model) | ffmpeg subprocess; timestamp → PNG list | — |
@@ -557,7 +559,7 @@ context: Optional[str] = None         # case-specific freeform notes — prior i
 base_plate_path: Optional[str] = None # for preservation_fidelity (mutation eval)
 identity_refs: Optional[List[str]] = None   # for identity carry-through eval
 style_refs: Optional[List[str]] = None      # for style_lock comparison
-model: str = "gemini-3.5-flash"
+model: str = "gemini-3.5-flash"        # video tools override this with gemini-3.6-flash
 temperature: Optional[float] = None         # opt-in sampling override
 system_prompt: Optional[str] = None         # rare override for model behavior
 ```
@@ -797,7 +799,7 @@ Step 0 was the critical unlock: without it, Step 2 would have had to fake CLI in
 | 11 | Reference shape: flat list vs. three named args | **Closed** — three named args (`base_plate_path`, `identity_refs`, `style_refs`) |
 | 12 | Single `analyze_image` tool vs. `describe`/`score` split | **Closed** — split, with shared backend |
 | 13 | Convenience `analyze_image` wrapper | **Closed** — no, force explicit choice |
-| 14 | Default model for analysis tools | **Closed** — `gemini-3.5-flash` for all Gemini analysis tools |
+| 14 | Default model for analysis tools | **Closed** — `gemini-3.5-flash` for image tools; `gemini-3.6-flash` for video tools |
 | 15 | `intent` + `context` as separate inputs vs. single freeform field | **Closed** — separate (different lifetimes, different routing) |
 | 16 | Frame extraction tool location | **Closed** — inside `media-analysis-mcp` |
 

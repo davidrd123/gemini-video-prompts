@@ -4,7 +4,7 @@ Toolkit for the *riff* workflow — iteratively generate, analyze, and refine AI
 
 - `gemini-video-prompts` — the original batch CLI for Gemini image/video generation (still the local entry point for batch runs and dry-runs).
 - `gemini-prompts-mcp` — wraps the CLI as MCP tools (`generate_image` via Gemini, `generate_video` via Replicate-Seedance).
-- `media-analysis-mcp` — Gemini multimodal analysis (`describe_*`, `score_*`, `compare_images`, `extract_visual_tokens`) + ffmpeg-based `extract_video_frames`.
+- `media-analysis-mcp` — Gemini multimodal analysis (`analyze_*`, `describe_*`, `score_*`, `compare_images`, `extract_visual_tokens`) + ffmpeg-based `extract_video_frames`.
 
 The name comes from the `generation-review-loop` skill's vocabulary for iterative prompt work — *the riff loop*: generate → review → extract → iterate. See [`MCP_DESIGN.md`](MCP_DESIGN.md) for the architecture.
 
@@ -22,7 +22,8 @@ Current defaults:
 - CLI video default model: `veo-3.1-fast-generate-preview`
 - CLI/MCP image default model: `gemini-3-pro-image-preview`
 - MCP video default model: `bytedance/seedance-2.0`
-- Media-analysis default model: `gemini-3.5-flash`
+- Media-analysis image default model: `gemini-3.5-flash`
+- Media-analysis video default model: `gemini-3.6-flash`
 
 Model strings remain configurable so a teammate with access to a newer preview
 or provider model can swap it in without editing the code.
@@ -117,15 +118,19 @@ uv run media-analysis-mcp
 Analysis tools:
 
 - `analyze_image` / `analyze_video` — **preferred default.** Free-form Q&A: pass any question, get a prose answer. Same multimodal plumbing, no response schema.
+- `analyze_audio` — free-form audio Q&A and detailed transcription. Preserves the Files API's detected `audio/*` MIME type, including M4A/AAC files that must not be routed through `analyze_video`. Defaults to `gemini-3.6-flash`.
+- `analyze_videos` — one grounded free-form question across 2–10 ordered,
+  explicitly labeled videos. Useful for edit comparisons, continuity checks,
+  and candidate ranking without first concatenating a review reel.
 - `describe_image` / `describe_video` — structured observation against a fixed taxonomy (8 categories for images, 12 for video). No scoring, no verdict — Claude is the judge. _Under review for deprecation_ — its baked-in taxonomy may not be justified vs. `analyze_*`; prefer `analyze_*` for new work.
 - `score_image` / `score_video` — calibrated 0–100 scoring across criteria (default: the 6 dimensions from `generation-review-loop`). Gemini is the judge.
 - `compare_images` — pick the best of N candidates against criteria; returns `best_index` + reasoning.
 - `extract_visual_tokens` — deconstruct an image into reusable prompt tokens (lighting/atmosphere/palette/materials/spatial_grammar by default).
 - `extract_video_frames` — ffmpeg-based frame extraction at custom timestamps; useful for feeding stills back into image tools.
 
-All Gemini analysis tools share one default model (`gemini-3.5-flash`) and an
-opt-in `temperature` (omitted unless you pass one — each model uses its own
-tuned default).
+Gemini image-analysis tools default to `gemini-3.5-flash`; video-analysis
+tools default to `gemini-3.6-flash`. All retain an opt-in `temperature`
+(omitted unless you pass one — each model uses its own tuned default).
 
 #### When to use which: `analyze_*` vs `describe_*`
 
@@ -199,6 +204,8 @@ add the tools to a `permissions.allow` list. For a global setup put it in
       "mcp__gemini-prompts__get_video_job",
       "mcp__media-analysis__analyze_image",
       "mcp__media-analysis__analyze_video",
+      "mcp__media-analysis__analyze_audio",
+      "mcp__media-analysis__analyze_videos",
       "mcp__media-analysis__score_image",
       "mcp__media-analysis__compare_images",
       "mcp__media-analysis__extract_visual_tokens",
@@ -446,6 +453,19 @@ uv run gemini-video-prompts my_prompts.dat --format yaml
 
 This project follows [semantic versioning](https://semver.org/). The current
 version is set in [`pyproject.toml`](pyproject.toml).
+
+### Unreleased
+
+- **Gemini 3.6 Flash for video analysis** — `analyze_video`,
+  `analyze_videos`, `describe_video`, and `score_video` now default to
+  `gemini-3.6-flash`.
+  Image-analysis defaults remain on `gemini-3.5-flash`.
+- **Native multi-video analysis** — `analyze_videos` accepts 2–10 distinct
+  local videos plus optional ordered labels, uploads them into one Gemini
+  request, and cleans up every Files API resource even after partial failure.
+- **Native audio analysis** — `analyze_audio` preserves the Files API's
+  detected `audio/*` MIME type for free-form analysis and transcription,
+  including M4A/AAC recordings that must not be routed as video.
 
 ### 0.2.0
 

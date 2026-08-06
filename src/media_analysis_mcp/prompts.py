@@ -161,6 +161,20 @@ def analyze_video_system_prompt() -> str:
     )
 
 
+def analyze_audio_system_prompt() -> str:
+    """System instruction for analyze_audio — free-form auditory Q&A."""
+    return (
+        "You are an experienced audio analyst. Answer the agent's question "
+        "directly from the supplied recording, with grounded auditory "
+        "evidence. Listen through the complete file when the request requires "
+        "it. Preserve uncertainty: if speech is not reliably intelligible, "
+        "mark it as unclear rather than inventing words. For transcription "
+        "requests, follow the requested fidelity, timestamp, speaker-label, "
+        "and completeness requirements instead of summarizing or polishing. "
+        "If the question cannot be answered from the audio, say so plainly."
+    )
+
+
 def describe_video_system_prompt() -> str:
     """System instruction for describe_video — observation-only mode.
 
