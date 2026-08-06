@@ -388,6 +388,7 @@ The `replicate_min.py` borrowed from DMPOST31 is *only* extended in one place: `
 {
   "status": "ok",
   "created_at": "2026-05-08T...",
+  "collected_at": "2026-05-08T...",
   "title": "...",
   "model": "bytedance/seedance-2.0",
   "model_version": "@latest",
@@ -823,6 +824,11 @@ outputs, an append-only `index.ndjson` with a shared write lock and recoverable
 per-job event markers, locked terminal finalization, and read-only
 `get_generation` / `list_generations` lookups that also discover records
 created before the index.
+
+Generation timestamps distinguish lifecycle events: `created_at` is the local
+request/submission time, provider `started_at` / `completed_at` values are
+preserved when available, and `collected_at` records when the local result and
+downloaded artifacts were finalized.
 
 Add:
 - `start_video_job(...)` - creates the Replicate prediction and returns `{job_id, prediction_id, status, job_dir}` immediately.
