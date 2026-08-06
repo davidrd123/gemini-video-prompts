@@ -480,6 +480,9 @@ version is set in [`pyproject.toml`](pyproject.toml).
 
 ### Unreleased
 
+- **Consistent generation timestamps** — video results preserve the original
+  request time as `created_at` and record local result finalization separately
+  as `collected_at`.
 - **Durable Seedance provenance** — async generation records now distinguish
   requested and effective seeds, recover provider-selected seeds from Replicate
   prediction logs, hash reference/output artifacts, append idempotent lifecycle

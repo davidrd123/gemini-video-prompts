@@ -279,6 +279,7 @@ def _generation_index_entry(
         "created_at": status.get("created_at"),
         "started_at": status.get("started_at"),
         "completed_at": status.get("completed_at"),
+        "collected_at": result.get("collected_at"),
         "title": status.get("title"),
         "model": status.get("model"),
         "mode": status.get("mode"),
@@ -515,12 +516,18 @@ def _result_from_prediction(
         out_clean["media_info"] = seedance.probe_media_info(out_clean["path"])
         enriched_outputs.append(out_clean)
 
+    collected_at = now_iso()
     return {
         "status": "ok",
         "generation_id": status["job_id"],
-        "created_at": now_iso(),
+        "created_at": (
+            status.get("created_at")
+            or prediction.get("created_at")
+            or collected_at
+        ),
         "started_at": prediction.get("started_at") or status.get("started_at"),
         "completed_at": prediction.get("completed_at"),
+        "collected_at": collected_at,
         "title": status["title"],
         "model": status["model"],
         "model_version": prediction.get("version") or "@latest",
@@ -852,7 +859,8 @@ def generate_video(
         / f"01_{title_slug}_{job_hash}"
     )
 
-    started_at = now_iso()
+    created_at = now_iso()
+    started_at = created_at
     sidecar = seedance.run_seedance_job(
         api_params=api_params,
         return_params=api_params,  # already string paths from build_seedance_video_params
@@ -886,10 +894,12 @@ def generate_video(
         out_clean["media_info"] = seedance.probe_media_info(out_clean["path"])
         enriched_outputs.append(out_clean)
 
+    collected_at = now_iso()
     result = {
         "status": "ok",
-        "created_at": now_iso(),
+        "created_at": created_at,
         "started_at": started_at,
+        "collected_at": collected_at,
         "title": title_str,
         "model": model,
         "model_version": (sidecar.get("model") or {}).get("version") or "@latest",

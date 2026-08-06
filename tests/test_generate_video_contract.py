@@ -128,6 +128,31 @@ def test_seedance_hashes_the_same_open_stream_passed_to_provider(
     assert captured["handle"].closed is True
 
 
+def test_seedance_reference_image_aspect_ratio_preflight(tmp_path: Path) -> None:
+    image_module = pytest.importorskip("PIL.Image")
+    matching = tmp_path / "matching.png"
+    mismatched = tmp_path / "mismatched.png"
+    image_module.new("RGB", (16, 9)).save(matching)
+    image_module.new("RGB", (9, 16)).save(mismatched)
+
+    seedance.assert_reference_aspect_ratios(
+        {
+            "aspect_ratio": "16:9",
+            "reference_images": [str(matching)],
+        }
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        seedance.assert_reference_aspect_ratios(
+            {
+                "aspect_ratio": "16:9",
+                "reference_images": [str(mismatched)],
+            }
+        )
+    assert str(exc_info.value).startswith("INVALID_INPUT:")
+    assert "mismatched.png" in str(exc_info.value)
+
+
 def test_generate_video_preserves_coded_error_prefix(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, image_path: Path
 ) -> None:
@@ -156,6 +181,10 @@ def test_generate_video_preserves_coded_error_prefix(
 def test_generate_video_writes_job_json_and_cold_start(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, image_path: Path
 ) -> None:
+    submission_time = "2026-05-09T10:00:00Z"
+    collection_time = "2026-05-09T10:00:30Z"
+    timestamps = iter([submission_time, collection_time])
+
     def fake_run_seedance_job(**kwargs):
         output_path = kwargs["out_dir"] / "fake_00.mp4"
         output_path.write_bytes(b"fake video")
@@ -178,6 +207,7 @@ def test_generate_video_writes_job_json_and_cold_start(
         }
 
     monkeypatch.setattr(gen_server.seedance, "run_seedance_job", fake_run_seedance_job)
+    monkeypatch.setattr(gen_server, "now_iso", lambda: next(timestamps))
     monkeypatch.setattr(
         gen_server.seedance,
         "probe_media_info",
@@ -199,8 +229,13 @@ def test_generate_video_writes_job_json_and_cold_start(
     job_json = Path(result["job_dir"]) / "job.json"
     assert job_json.is_file()
     assert result["metrics"]["cold_start"] is True
+    assert result["created_at"] == submission_time
+    assert result["started_at"] == submission_time
+    assert result["collected_at"] == collection_time
     saved = json.loads(job_json.read_text(encoding="utf-8"))
     assert saved["status"] == "ok"
+    assert saved["created_at"] == submission_time
+    assert saved["collected_at"] == collection_time
     assert saved["metrics"]["cold_start"] is True
     assert saved["seed_provenance"]["source"] == "unavailable"
     assert saved["references"][0]["sha256"] == hashlib.sha256(
@@ -214,6 +249,7 @@ def test_start_video_job_writes_local_status(
 ) -> None:
     def fake_create_seedance_prediction(**kwargs):
         assert kwargs["webhook_url"] is None
+        reference_bytes = image_path.read_bytes()
         return {
             "id": "pred-starting",
             "status": "starting",
@@ -224,6 +260,13 @@ def test_start_video_job_writes_local_status(
             "output": None,
             "metrics": None,
             "error": None,
+            "_reference_file_identities": {
+                str(image_path.resolve()): {
+                    "bytes": len(reference_bytes),
+                    "sha256": hashlib.sha256(reference_bytes).hexdigest(),
+                    "hash_source": "uploaded_file_stream",
+                }
+            },
         }
 
     monkeypatch.setattr(
@@ -253,11 +296,23 @@ def test_start_video_job_writes_local_status(
     assert saved["references"][0]["sha256"] == hashlib.sha256(
         image_path.read_bytes()
     ).hexdigest()
+    assert saved["references"][0]["hash_source"] == "uploaded_file_stream"
+    saved_request = json.loads(
+        Path(result["request_path"]).read_text(encoding="utf-8")
+    )
+    assert (
+        saved_request["references"][0]["hash_source"]
+        == "uploaded_file_stream"
+    )
 
     index_path = tmp_path / "out" / "jobs" / "index.ndjson"
     entries = [json.loads(line) for line in index_path.read_text().splitlines()]
     assert entries[0]["event"] == "created"
     assert entries[0]["generation_id"] == result["job_id"]
+    assert (
+        entries[0]["reference_files"][0]["hash_source"]
+        == "uploaded_file_stream"
+    )
 
 
 def test_start_video_job_uses_unique_job_dirs(
@@ -399,6 +454,9 @@ def test_get_video_job_unknown_job_id_is_coded(tmp_path: Path) -> None:
 def test_get_video_job_finalizes_succeeded_prediction(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, image_path: Path
 ) -> None:
+    collection_time = "2026-05-09T10:00:31Z"
+    download_complete = False
+
     monkeypatch.setattr(
         gen_server.seedance,
         "create_seedance_prediction",
@@ -432,8 +490,10 @@ def test_get_video_job_finalizes_succeeded_prediction(
     )
 
     def fake_download_prediction_outputs(**kwargs):
+        nonlocal download_complete
         output_path = kwargs["out_dir"] / "fake_00.mp4"
         output_path.write_bytes(b"fake video")
+        download_complete = True
         return [
             {
                 "path": str(output_path),
@@ -465,6 +525,12 @@ def test_get_video_job_finalizes_succeeded_prediction(
         image=str(image_path),
         out_root=str(tmp_path / "out"),
     )
+
+    def collection_clock() -> str:
+        assert download_complete, "collected_at sampled before download completed"
+        return collection_time
+
+    monkeypatch.setattr(gen_server, "now_iso", collection_clock)
     result = gen_server.get_video_job(
         started["job_id"],
         out_root=str(tmp_path / "out"),
@@ -473,6 +539,8 @@ def test_get_video_job_finalizes_succeeded_prediction(
     assert result["status"] == "succeeded"
     assert result["outputs_downloaded"] is True
     assert result["result"]["status"] == "ok"
+    assert result["result"]["created_at"] == started["created_at"]
+    assert result["result"]["collected_at"] == collection_time
     assert result["result"]["outputs"][0]["path"].endswith(".mp4")
     assert result["result"]["metrics"]["predict_time_s"] == 1.5
     assert result["seed_provenance"] == {
@@ -488,6 +556,8 @@ def test_get_video_job_finalizes_succeeded_prediction(
     saved_job = json.loads(job_json.read_text(encoding="utf-8"))
     assert saved_job["prediction_id"] == "pred-done"
     assert saved_job["generation_id"] == started["job_id"]
+    assert saved_job["created_at"] == started["created_at"]
+    assert saved_job["collected_at"] == result["result"]["collected_at"]
     assert saved_job["seed_provenance"]["effective_seed"] == 2091770884
     assert saved_job["outputs"][0]["sha256"] == hashlib.sha256(
         b"fake video"
@@ -499,6 +569,9 @@ def test_get_video_job_finalizes_succeeded_prediction(
     )
     assert provenance["state"] == "succeeded"
     assert provenance["request"]["prompt"] == "Use [Image1]"
+    assert provenance["request"]["created_at"] == started["created_at"]
+    assert provenance["status_record"]["created_at"] == started["created_at"]
+    assert provenance["result"]["created_at"] == started["created_at"]
     assert provenance["result"]["prediction_id"] == "pred-done"
     assert provenance["seed_provenance"]["effective_seed"] == 2091770884
 
@@ -510,6 +583,10 @@ def test_get_video_job_finalizes_succeeded_prediction(
     assert listed["total"] == 1
     assert listed["generations"][0]["job_id"] == started["job_id"]
     assert listed["generations"][0]["seed_provenance"]["effective_seed"] == 2091770884
+    assert (
+        listed["generations"][0]["collected_at"]
+        == result["result"]["collected_at"]
+    )
     assert listed["generations"][0]["reference_files"][0]["sha256"]
     assert listed["generations"][0]["output_files"][0]["sha256"]
 
