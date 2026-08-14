@@ -535,14 +535,14 @@ System dep: `ffmpeg` + `ffprobe` (`brew install ffmpeg` on Mac). README document
 
 | Tool | Default model | Purpose | Who judges? |
 |------|---------------|---------|-------------|
-| `describe_image` | `gemini-3.6-flash` | Rich structured observations of one image; no scores | **Claude** — consumes the description, applies the rubric herself |
-| `score_image` | `gemini-3.6-flash` | 6-dim scored eval of one image; advisory `decision_hint` | **Gemini** — Claude can override |
-| `describe_video` | `gemini-3.6-flash` | Rich structured observations of one video; video-aware fields | **Claude** |
-| `score_video` | `gemini-3.6-flash` | 6-dim scored eval of one video, dims adapted per skill SKILL.md:290-300 | **Gemini** |
-| `analyze_videos` | `gemini-3.6-flash` | Free-form cross-video question over 2–10 ordered, labeled videos | **Claude** |
-| `analyze_audio` | `gemini-3.6-flash` | Free-form auditory analysis or transcription of one recording | **Claude** |
-| `compare_images` | `gemini-3.6-flash` | "Which is better"; pick + reasoning | **Gemini** |
-| `extract_visual_tokens` | `gemini-3.6-flash` | Categorized token deconstruct for env-coverage genesis workflow | **Gemini (descriptive)** |
+| `describe_image` | `gemini-3.7-flash` | Rich structured observations of one image; no scores | **Claude** — consumes the description, applies the rubric herself |
+| `score_image` | `gemini-3.7-flash` | 6-dim scored eval of one image; advisory `decision_hint` | **Gemini** — Claude can override |
+| `describe_video` | `gemini-3.7-flash` | Rich structured observations of one video; video-aware fields | **Claude** |
+| `score_video` | `gemini-3.7-flash` | 6-dim scored eval of one video, dims adapted per skill SKILL.md:290-300 | **Gemini** |
+| `analyze_videos` | `gemini-3.7-flash` | Free-form cross-video question over 2–10 ordered, labeled videos | **Claude** |
+| `analyze_audio` | `gemini-3.7-flash` | Free-form auditory analysis or transcription of one recording | **Claude** |
+| `compare_images` | `gemini-3.7-flash` | "Which is better"; pick + reasoning | **Gemini** |
+| `extract_visual_tokens` | `gemini-3.7-flash` | Categorized token deconstruct for env-coverage genesis workflow | **Gemini (descriptive)** |
 | `extract_video_frames` | — (no model) | ffmpeg subprocess; timestamp → PNG list | — |
 
 **Why both `describe` and `score`.** `describe_image` lets Claude do the judgment using conversation-private context. `score_image` lets Gemini do the judgment when Claude wants a fast structured verdict. They wrap the same Gemini call internally — only the system instruction + response schema differs. A/B testing which produces better real-world iteration outcomes is the empirical question this design supports.
@@ -560,7 +560,7 @@ context: Optional[str] = None         # case-specific freeform notes — prior i
 base_plate_path: Optional[str] = None # for preservation_fidelity (mutation eval)
 identity_refs: Optional[List[str]] = None   # for identity carry-through eval
 style_refs: Optional[List[str]] = None      # for style_lock comparison
-model: str = "gemini-3.6-flash"
+model: str = "gemini-3.7-flash"
 temperature: Optional[float] = None         # opt-in sampling override
 system_prompt: Optional[str] = None         # rare override for model behavior
 ```
@@ -585,7 +585,7 @@ Returns:
 
 ```jsonc
 {
-  "model": "gemini-3.6-flash",
+  "model": "gemini-3.7-flash",
   "image_path": "/path/to/image.png",
   "observations": {
     "composition": "Wide isometric establishing shot. Central machine dominates the frame; supermarket facade in background. Cars arranged in tidy rows along the left and right edges; the foreground asphalt is mostly empty.",
@@ -619,7 +619,7 @@ Returns:
 
 ```jsonc
 {
-  "model": "gemini-3.6-flash",
+  "model": "gemini-3.7-flash",
   "image_path": "/path/to/image.png",
   "evaluations": {
     "prompt_fidelity":         { "score": 75, "notes": "Wide lot ✓, machine ✓..." },
@@ -655,7 +655,7 @@ def compare_images(
     intent: Optional[str] = None,
     context: Optional[str] = None,
     criteria: Optional[List[str]] = None,
-    model: str = "gemini-3.6-flash",
+    model: str = "gemini-3.7-flash",
 ) -> dict
 ```
 
@@ -677,7 +677,7 @@ def extract_visual_tokens(
     image_path: str,
     categories: Optional[List[str]] = None,    # default: TOKEN_CATEGORIES
     intent: Optional[str] = None,              # focuses the extraction
-    model: str = "gemini-3.6-flash",
+    model: str = "gemini-3.7-flash",
 ) -> dict
 ```
 
@@ -691,7 +691,7 @@ Returns:
 
 ```jsonc
 {
-  "model": "gemini-3.6-flash",
+  "model": "gemini-3.7-flash",
   "image_path": "/path/to/image.png",
   "tokens": {
     "lighting":        ["high-key commercial", "warm key light", "no cast shadows"],
@@ -800,7 +800,7 @@ Step 0 was the critical unlock: without it, Step 2 would have had to fake CLI in
 | 11 | Reference shape: flat list vs. three named args | **Closed** — three named args (`base_plate_path`, `identity_refs`, `style_refs`) |
 | 12 | Single `analyze_image` tool vs. `describe`/`score` split | **Closed** — split, with shared backend |
 | 13 | Convenience `analyze_image` wrapper | **Closed** — no, force explicit choice |
-| 14 | Default model for analysis tools | **Closed** — `gemini-3.6-flash` for image, video, and audio tools |
+| 14 | Default model for analysis tools | **Closed** — `gemini-3.7-flash` for image, video, and audio tools |
 | 15 | `intent` + `context` as separate inputs vs. single freeform field | **Closed** — separate (different lifetimes, different routing) |
 | 16 | Frame extraction tool location | **Closed** — inside `media-analysis-mcp` |
 

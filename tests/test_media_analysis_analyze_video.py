@@ -19,9 +19,9 @@ class _FakeClient:
         server.score_video,
     ],
 )
-def test_all_video_analysis_tools_default_to_gemini_3_6_flash(tool) -> None:
+def test_all_video_analysis_tools_default_to_gemini_3_7_flash(tool) -> None:
     default = inspect.signature(tool).parameters["model"].default
-    assert server.DEFAULT_VIDEO_ANALYSIS_MODEL == "gemini-3.6-flash"
+    assert server.DEFAULT_VIDEO_ANALYSIS_MODEL == "gemini-3.7-flash"
     assert default == server.DEFAULT_VIDEO_ANALYSIS_MODEL
 
 
@@ -122,7 +122,7 @@ def test_analyze_video_returns_question_and_answer(
     assert "Question: describe the camera move" in captured["contents"][0]
 
 
-def test_analyze_video_defaults_to_gemini_3_6_flash(
+def test_analyze_video_defaults_to_gemini_3_7_flash(
     monkeypatch: pytest.MonkeyPatch, video_path: Path
 ) -> None:
     captured: dict = {}
