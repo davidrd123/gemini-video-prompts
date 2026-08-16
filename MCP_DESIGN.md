@@ -539,7 +539,8 @@ System dep: `ffmpeg` + `ffprobe` (`brew install ffmpeg` on Mac). README document
 | `score_image` | `gemini-3.7-flash` | 6-dim scored eval of one image; advisory `decision_hint` | **Gemini** — Claude can override |
 | `describe_video` | `gemini-3.7-flash` | Rich structured observations of one video; video-aware fields | **Claude** |
 | `score_video` | `gemini-3.7-flash` | 6-dim scored eval of one video, dims adapted per skill SKILL.md:290-300 | **Gemini** |
-| `analyze_videos` | `gemini-3.7-flash` | Free-form cross-video question over 2–10 ordered, labeled videos | **Claude** |
+| `analyze_video` | `gemini-3.7-flash` | Free-form question over one video; defaults to high thinking and 65,536 max output tokens | **Claude** |
+| `analyze_videos` | `gemini-3.7-flash` | Free-form cross-video question over 2–10 ordered, labeled videos; defaults to high thinking and 65,536 max output tokens | **Claude** |
 | `analyze_audio` | `gemini-3.7-flash` | Free-form auditory analysis or transcription of one recording | **Claude** |
 | `compare_images` | `gemini-3.7-flash` | "Which is better"; pick + reasoning | **Gemini** |
 | `extract_visual_tokens` | `gemini-3.7-flash` | Categorized token deconstruct for env-coverage genesis workflow | **Gemini (descriptive)** |

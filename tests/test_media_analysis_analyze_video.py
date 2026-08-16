@@ -99,6 +99,8 @@ def test_analyze_video_returns_question_and_answer(
     def fake_call_unstructured(**kwargs):
         captured["model"] = kwargs["model"]
         captured["contents"] = kwargs["contents"]
+        captured["thinking_level"] = kwargs["thinking_level"]
+        captured["max_output_tokens"] = kwargs["max_output_tokens"]
         return "The camera is locked off; the glow ignites near midpoint."
 
     monkeypatch.setattr(
@@ -116,6 +118,10 @@ def test_analyze_video_returns_question_and_answer(
     assert result["video_path"] == str(video_path.resolve())
     assert result["question"] == "describe the camera move"
     assert result["answer"] == "The camera is locked off; the glow ignites near midpoint."
+    assert captured["thinking_level"] == "high"
+    assert captured["max_output_tokens"] == 65_536
+    assert result["thinking_level"] == "high"
+    assert result["max_output_tokens"] == 65_536
     assert result["context_used"]["question"] == "describe the camera move"
     assert result["context_used"]["prompt"] is None
     # Question is anchored in the first content block (context_block).
@@ -142,6 +148,58 @@ def test_analyze_video_defaults_to_gemini_3_7_flash(
 
     assert captured["model"] == server.DEFAULT_VIDEO_ANALYSIS_MODEL
     assert result["model"] == server.DEFAULT_VIDEO_ANALYSIS_MODEL
+
+
+def test_analyze_video_allows_generation_control_overrides(
+    monkeypatch: pytest.MonkeyPatch, video_path: Path
+) -> None:
+    captured: dict = {}
+
+    def fake_call_unstructured(**kwargs):
+        captured.update(kwargs)
+        return "A detailed answer."
+
+    monkeypatch.setattr(
+        server.gemini_media, "call_unstructured", fake_call_unstructured
+    )
+
+    result = server.analyze_video(
+        video_path=str(video_path),
+        question="catalog the audiovisual construction",
+        thinking_level="low",
+        max_output_tokens=8_192,
+    )
+
+    assert captured["thinking_level"] == "low"
+    assert captured["max_output_tokens"] == 8_192
+    assert result["thinking_level"] == "low"
+    assert result["max_output_tokens"] == 8_192
+
+
+def test_analyze_video_allows_api_default_generation_controls(
+    monkeypatch: pytest.MonkeyPatch, video_path: Path
+) -> None:
+    captured: dict = {}
+
+    def fake_call_unstructured(**kwargs):
+        captured.update(kwargs)
+        return "A detailed answer."
+
+    monkeypatch.setattr(
+        server.gemini_media, "call_unstructured", fake_call_unstructured
+    )
+
+    result = server.analyze_video(
+        video_path=str(video_path),
+        question="catalog the audiovisual construction",
+        thinking_level=None,
+        max_output_tokens=None,
+    )
+
+    assert captured["thinking_level"] is None
+    assert captured["max_output_tokens"] is None
+    assert result["thinking_level"] is None
+    assert result["max_output_tokens"] is None
 
 
 def test_analyze_video_errors_on_missing_file(tmp_path: Path) -> None:
@@ -197,6 +255,8 @@ def test_analyze_videos_labels_uploads_and_cleans_up_in_order(
 
     def fake_call_unstructured(**kwargs):
         captured["contents"] = kwargs["contents"]
+        captured["thinking_level"] = kwargs["thinking_level"]
+        captured["max_output_tokens"] = kwargs["max_output_tokens"]
         return "Candidate B has the cleanest causal action."
 
     monkeypatch.setattr(server.gemini_media, "upload_and_poll_video", fake_upload)
@@ -222,6 +282,10 @@ def test_analyze_videos_labels_uploads_and_cleans_up_in_order(
     assert result["video_paths"] == resolved
     assert result["video_labels"] == ["Current master", "Doorway candidate"]
     assert result["answer"] == "Candidate B has the cleanest causal action."
+    assert captured["thinking_level"] == "high"
+    assert captured["max_output_tokens"] == 65_536
+    assert result["thinking_level"] == "high"
+    assert result["max_output_tokens"] == 65_536
     assert result["context_used"]["video_labels"] == result["video_labels"]
 
     labels = [part for part in captured["contents"] if isinstance(part, str)]

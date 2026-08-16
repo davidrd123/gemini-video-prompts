@@ -17,7 +17,7 @@ prompt + response schema.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from mcp.server.fastmcp import FastMCP
 
@@ -27,6 +27,8 @@ from . import ffmpeg_utils, gemini_media, prompts, schemas
 mcp = FastMCP("media-analysis-mcp")
 DEFAULT_ANALYSIS_MODEL = "gemini-3.7-flash"
 DEFAULT_VIDEO_ANALYSIS_MODEL = DEFAULT_ANALYSIS_MODEL
+DEFAULT_VIDEO_THINKING_LEVEL = "high"
+DEFAULT_VIDEO_MAX_OUTPUT_TOKENS = 65_536
 DEFAULT_AUDIO_ANALYSIS_MODEL = DEFAULT_ANALYSIS_MODEL
 
 
@@ -935,6 +937,10 @@ def analyze_video(
     temperature: Optional[float] = None,
     system_prompt: Optional[str] = None,
     upload_timeout_s: int = 300,
+    thinking_level: Optional[
+        Literal["minimal", "low", "medium", "high"]
+    ] = DEFAULT_VIDEO_THINKING_LEVEL,
+    max_output_tokens: Optional[int] = DEFAULT_VIDEO_MAX_OUTPUT_TOKENS,
 ) -> dict[str, Any]:
     """Free-form video analysis. Same Files API plumbing as describe_video,
     but no response schema — Gemini answers ``question`` in prose.
@@ -959,6 +965,11 @@ def analyze_video(
         temperature: Optional sampling override; omitted by default.
         system_prompt: Override the default analyze-mode instruction.
         upload_timeout_s: Bounds the Files API upload+process wait.
+        thinking_level: Gemini reasoning depth. Defaults to ``high``. Pass
+            ``None`` to use the model/API default.
+        max_output_tokens: Maximum output budget; thinking can consume this
+            budget on thinking models. Defaults to 65,536. Pass ``None`` to
+            use the model/API default.
 
     Raises:
         RuntimeError: ``VIDEO_NOT_FOUND``, ``VIDEO_UPLOAD_FAILED``,
@@ -1001,6 +1012,8 @@ def analyze_video(
             system_instruction=system_instruction,
             contents=contents,
             temperature=temperature,
+            thinking_level=thinking_level,
+            max_output_tokens=max_output_tokens,
         )
     finally:
         gemini_media.cleanup_uploaded(client, uploaded)
@@ -1009,6 +1022,8 @@ def analyze_video(
         "model": model,
         "video_path": str(Path(video_path).expanduser().resolve()),
         "fps": fps,
+        "thinking_level": thinking_level,
+        "max_output_tokens": max_output_tokens,
         "question": question_text,
         "answer": answer,
         "context_used": _context_used(
@@ -1039,6 +1054,10 @@ def analyze_videos(
     temperature: Optional[float] = None,
     system_prompt: Optional[str] = None,
     upload_timeout_s: int = 300,
+    thinking_level: Optional[
+        Literal["minimal", "low", "medium", "high"]
+    ] = DEFAULT_VIDEO_THINKING_LEVEL,
+    max_output_tokens: Optional[int] = DEFAULT_VIDEO_MAX_OUTPUT_TOKENS,
 ) -> dict[str, Any]:
     """Ask one grounded question across two to ten ordered videos.
 
@@ -1064,6 +1083,11 @@ def analyze_videos(
         temperature: Optional sampling override.
         system_prompt: Override the default analyze-mode instruction.
         upload_timeout_s: Per-file Files API processing timeout.
+        thinking_level: Gemini reasoning depth. Defaults to ``high``. Pass
+            ``None`` to use the model/API default.
+        max_output_tokens: Maximum output budget; thinking can consume this
+            budget on thinking models. Defaults to 65,536. Pass ``None`` to
+            use the model/API default.
 
     Returns:
         The resolved ordered paths and labels, model/fps, original question,
@@ -1115,6 +1139,8 @@ def analyze_videos(
             system_instruction=system_instruction,
             contents=contents,
             temperature=temperature,
+            thinking_level=thinking_level,
+            max_output_tokens=max_output_tokens,
         )
     finally:
         for uploaded in uploaded_files:
@@ -1136,6 +1162,8 @@ def analyze_videos(
         "video_paths": resolved_paths,
         "video_labels": normalized_labels,
         "fps": fps,
+        "thinking_level": thinking_level,
+        "max_output_tokens": max_output_tokens,
         "question": question_text,
         "answer": answer,
         "context_used": context_used,

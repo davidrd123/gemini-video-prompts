@@ -185,6 +185,57 @@ def test_structured_call_keeps_explicit_temperature_override() -> None:
     assert captured["config"].kwargs["temperature"] == 0.2
 
 
+def test_unstructured_call_omits_optional_generation_controls_by_default() -> None:
+    captured: dict = {}
+
+    class FakeModels:
+        def generate_content(self, **kwargs):
+            captured.update(kwargs)
+            return type("Response", (), {"text": "A detailed answer."})()
+
+    client = type("Client", (), {"models": FakeModels()})()
+
+    answer = server.gemini_media.call_unstructured(
+        client=client,
+        gtypes=_CaptureConfigTypes,
+        model="test-model",
+        system_instruction="analyze",
+        contents=["target"],
+    )
+
+    assert answer == "A detailed answer."
+    assert "temperature" not in captured["config"].kwargs
+    assert "thinking_config" not in captured["config"].kwargs
+    assert "max_output_tokens" not in captured["config"].kwargs
+
+
+def test_unstructured_call_keeps_explicit_generation_controls() -> None:
+    captured: dict = {}
+
+    class FakeModels:
+        def generate_content(self, **kwargs):
+            captured.update(kwargs)
+            return type("Response", (), {"text": "A detailed answer."})()
+
+    client = type("Client", (), {"models": FakeModels()})()
+
+    server.gemini_media.call_unstructured(
+        client=client,
+        gtypes=_CaptureConfigTypes,
+        model="test-model",
+        system_instruction="analyze",
+        contents=["target"],
+        temperature=0.2,
+        thinking_level="high",
+        max_output_tokens=65_536,
+    )
+
+    config = captured["config"].kwargs
+    assert config["temperature"] == 0.2
+    assert config["thinking_config"] == {"thinking_level": "high"}
+    assert config["max_output_tokens"] == 65_536
+
+
 @pytest.mark.parametrize(
     ("criteria", "returned_names"),
     [

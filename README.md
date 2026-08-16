@@ -122,11 +122,12 @@ uv run media-analysis-mcp
 
 Analysis tools:
 
-- `analyze_image` / `analyze_video` — **preferred default.** Free-form Q&A: pass any question, get a prose answer. Same multimodal plumbing, no response schema.
+- `analyze_image` / `analyze_video` — **preferred default.** Free-form Q&A: pass any question, get a prose answer. Same multimodal plumbing, no response schema. Video analysis defaults to `thinking_level=high` and `max_output_tokens=65536`; both are explicit per-call overrides and may be set to `null` to restore model/API defaults.
 - `analyze_audio` — free-form audio Q&A and detailed transcription. Preserves the Files API's detected `audio/*` MIME type, including M4A/AAC files that must not be routed through `analyze_video`. Defaults to `gemini-3.7-flash`.
 - `analyze_videos` — one grounded free-form question across 2–10 ordered,
   explicitly labeled videos. Useful for edit comparisons, continuity checks,
-  and candidate ranking without first concatenating a review reel.
+  and candidate ranking without first concatenating a review reel. It shares
+  the high-thinking, 65,536-token video defaults and override behavior.
 - `describe_image` / `describe_video` — structured observation against a fixed taxonomy (8 categories for images, 12 for video). No scoring, no verdict — Claude is the judge. _Under review for deprecation_ — its baked-in taxonomy may not be justified vs. `analyze_*`; prefer `analyze_*` for new work.
 - `score_image` / `score_video` — calibrated 0–100 scoring across criteria (default: the 6 dimensions from `generation-review-loop`). Gemini is the judge.
 - `compare_images` — pick the best of N candidates against criteria; returns `best_index` + reasoning.
