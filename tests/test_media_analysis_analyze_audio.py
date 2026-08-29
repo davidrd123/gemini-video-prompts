@@ -82,7 +82,7 @@ def test_analyze_audio_preserves_detected_mime_and_defaults_model(
         question="Transcribe everything.",
     )
 
-    assert result["model"] == "gemini-3.6-flash"
+    assert result["model"] == "gemini-3.7-flash"
     assert result["detected_mime_type"] == "audio/mp4a-latm"
     assert result["audio_path"] == str(audio_path.resolve())
     media_part = captured["contents"][2]

@@ -15,15 +15,16 @@ The repo now has two generation paths:
 - **Standalone CLI** — built around the official `google-genai` Python SDK for
   Gemini image generation and the original Veo video batch flow.
 - **MCP generation server** — `generate_image` reuses the Gemini image worker;
-  `generate_video` uses Seedance 2.0 through Replicate.
+  `generate_video` uses Seedance 2.5 through Replicate (2.0 remains selectable
+  via the `model` arg — it is the only one with 1080p/4k output).
 
 Current defaults:
 
 - CLI video default model: `veo-3.1-fast-generate-preview`
 - CLI/MCP image default model: `gemini-3-pro-image-preview`
-- MCP video default model: `bytedance/seedance-2.0`
-- Media-analysis image default model: `gemini-3.6-flash`
-- Media-analysis video default model: `gemini-3.6-flash`
+- MCP video default model: `bytedance/seedance-2.5`
+- Media-analysis image default model: `gemini-3.7-flash`
+- Media-analysis video default model: `gemini-3.7-flash`
 
 Model strings remain configurable so a teammate with access to a newer preview
 or provider model can swap it in without editing the code.
@@ -122,11 +123,12 @@ uv run media-analysis-mcp
 
 Analysis tools:
 
-- `analyze_image` / `analyze_video` — **preferred default.** Free-form Q&A: pass any question, get a prose answer. Same multimodal plumbing, no response schema.
-- `analyze_audio` — free-form audio Q&A and detailed transcription. Preserves the Files API's detected `audio/*` MIME type, including M4A/AAC files that must not be routed through `analyze_video`. Defaults to `gemini-3.6-flash`.
+- `analyze_image` / `analyze_video` — **preferred default.** Free-form Q&A: pass any question, get a prose answer. Same multimodal plumbing, no response schema. Video analysis defaults to `thinking_level=high` and `max_output_tokens=65536`; both are explicit per-call overrides and may be set to `null` to restore model/API defaults.
+- `analyze_audio` — free-form audio Q&A and detailed transcription. Preserves the Files API's detected `audio/*` MIME type, including M4A/AAC files that must not be routed through `analyze_video`. Defaults to `gemini-3.7-flash`.
 - `analyze_videos` — one grounded free-form question across 2–10 ordered,
   explicitly labeled videos. Useful for edit comparisons, continuity checks,
-  and candidate ranking without first concatenating a review reel.
+  and candidate ranking without first concatenating a review reel. It shares
+  the high-thinking, 65,536-token video defaults and override behavior.
 - `describe_image` / `describe_video` — structured observation against a fixed taxonomy (8 categories for images, 12 for video). No scoring, no verdict — Claude is the judge. _Under review for deprecation_ — its baked-in taxonomy may not be justified vs. `analyze_*`; prefer `analyze_*` for new work.
 - `score_image` / `score_video` — calibrated 0–100 scoring across criteria (default: the 6 dimensions from `generation-review-loop`). Gemini is the judge.
 - `compare_images` — pick the best of N candidates against criteria; returns `best_index` + reasoning.
@@ -134,7 +136,7 @@ Analysis tools:
 - `extract_video_frames` — ffmpeg-based frame extraction at custom timestamps; useful for feeding stills back into image tools.
 
 All Gemini image-, video-, and audio-analysis tools default to
-`gemini-3.6-flash`. All retain an opt-in `temperature`
+`gemini-3.7-flash`. All retain an opt-in `temperature`
 (omitted unless you pass one — each model uses its own tuned default).
 
 #### When to use which: `analyze_*` vs `describe_*`
@@ -488,8 +490,10 @@ version is set in [`pyproject.toml`](pyproject.toml).
   prediction logs, hash reference/output artifacts, append idempotent lifecycle
   summaries to `jobs/index.ndjson`, and expose `get_generation` /
   `list_generations` for MCP retrieval.
-- **Gemini 3.6 Flash for media analysis** — image, video, multi-video, and
-  audio analysis tools now share the `gemini-3.6-flash` default.
+- **Gemini 3.7 Flash for media analysis** — image, video, multi-video, and
+  audio analysis tools now share the `gemini-3.7-flash` default. The live
+  Gemini Models API and synthetic image, audio, and video calls were verified
+  before changing the default.
 - **Native multi-video analysis** — `analyze_videos` accepts 2–10 distinct
   local videos plus optional ordered labels, uploads them into one Gemini
   request, and cleans up every Files API resource even after partial failure.

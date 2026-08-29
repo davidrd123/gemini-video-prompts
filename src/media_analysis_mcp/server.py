@@ -17,7 +17,7 @@ prompt + response schema.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from mcp.server.fastmcp import FastMCP
 
@@ -25,8 +25,10 @@ from . import ffmpeg_utils, gemini_media, prompts, schemas
 
 
 mcp = FastMCP("media-analysis-mcp")
-DEFAULT_ANALYSIS_MODEL = "gemini-3.6-flash"
+DEFAULT_ANALYSIS_MODEL = "gemini-3.7-flash"
 DEFAULT_VIDEO_ANALYSIS_MODEL = DEFAULT_ANALYSIS_MODEL
+DEFAULT_VIDEO_THINKING_LEVEL = "high"
+DEFAULT_VIDEO_MAX_OUTPUT_TOKENS = 65_536
 DEFAULT_AUDIO_ANALYSIS_MODEL = DEFAULT_ANALYSIS_MODEL
 
 
@@ -139,7 +141,7 @@ def describe_image(
         identity_refs: Optional list of character/asset reference paths.
             Useful for evaluating identity carry-through across shot types.
         style_refs: Optional list of style anchor paths.
-        model: Gemini model id. Default ``gemini-3.6-flash``.
+        model: Gemini model id. Default ``gemini-3.7-flash``.
         temperature: Optional sampling override; omitted by default.
         system_prompt: Override the default observation-mode system
             instruction. Rare.
@@ -228,7 +230,7 @@ def score_image(
         style_refs: References for style_lock dim.
         criteria: Override the default 6-dim list. Each entry becomes one
             evaluation in the response.
-        model: Gemini model id. Default ``gemini-3.6-flash``.
+        model: Gemini model id. Default ``gemini-3.7-flash``.
         temperature: Optional sampling override; omitted by default.
         system_prompt: Override the default scoring-mode system
             instruction. Rare.
@@ -345,7 +347,7 @@ def analyze_image(
         base_plate_path: Optional reference image (source plate).
         identity_refs: Optional character/asset reference paths.
         style_refs: Optional style anchor paths.
-        model: Gemini model id. Default ``gemini-3.6-flash``.
+        model: Gemini model id. Default ``gemini-3.7-flash``.
         temperature: Optional sampling override; omitted by default.
         system_prompt: Override the default analyze-mode instruction.
 
@@ -636,7 +638,7 @@ def analyze_audio(
         prompt: Optional provenance or production prompt.
         intent: Optional creative or analytical brief.
         context: Optional per-call notes.
-        model: Gemini model id. Default ``gemini-3.6-flash``.
+        model: Gemini model id. Default ``gemini-3.7-flash``.
         temperature: Optional sampling override; omitted by default.
         system_prompt: Optional audio-analysis system instruction override.
         upload_timeout_s: Bounds the Files API upload+processing wait.
@@ -736,7 +738,7 @@ def describe_video(
             the start frame.
         identity_refs: Optional list of character/asset reference paths.
         style_refs: Optional list of style anchor paths.
-        model: Gemini model id. Default ``gemini-3.6-flash``.
+        model: Gemini model id. Default ``gemini-3.7-flash``.
         temperature: Optional sampling override; omitted by default.
         system_prompt: Override the default observation-mode instruction.
         upload_timeout_s: How long to wait for Files API to mark the upload
@@ -935,6 +937,10 @@ def analyze_video(
     temperature: Optional[float] = None,
     system_prompt: Optional[str] = None,
     upload_timeout_s: int = 300,
+    thinking_level: Optional[
+        Literal["minimal", "low", "medium", "high"]
+    ] = DEFAULT_VIDEO_THINKING_LEVEL,
+    max_output_tokens: Optional[int] = DEFAULT_VIDEO_MAX_OUTPUT_TOKENS,
 ) -> dict[str, Any]:
     """Free-form video analysis. Same Files API plumbing as describe_video,
     but no response schema — Gemini answers ``question`` in prose.
@@ -955,10 +961,15 @@ def analyze_video(
         style_refs: Optional style anchor paths.
         fps: Sampling rate Gemini uses when reading the video. Default
             None lets Gemini pick (typically 1 fps).
-        model: Gemini model id. Default ``gemini-3.6-flash``.
+        model: Gemini model id. Default ``gemini-3.7-flash``.
         temperature: Optional sampling override; omitted by default.
         system_prompt: Override the default analyze-mode instruction.
         upload_timeout_s: Bounds the Files API upload+process wait.
+        thinking_level: Gemini reasoning depth. Defaults to ``high``. Pass
+            ``None`` to use the model/API default.
+        max_output_tokens: Maximum output budget; thinking can consume this
+            budget on thinking models. Defaults to 65,536. Pass ``None`` to
+            use the model/API default.
 
     Raises:
         RuntimeError: ``VIDEO_NOT_FOUND``, ``VIDEO_UPLOAD_FAILED``,
@@ -1001,6 +1012,8 @@ def analyze_video(
             system_instruction=system_instruction,
             contents=contents,
             temperature=temperature,
+            thinking_level=thinking_level,
+            max_output_tokens=max_output_tokens,
         )
     finally:
         gemini_media.cleanup_uploaded(client, uploaded)
@@ -1009,6 +1022,8 @@ def analyze_video(
         "model": model,
         "video_path": str(Path(video_path).expanduser().resolve()),
         "fps": fps,
+        "thinking_level": thinking_level,
+        "max_output_tokens": max_output_tokens,
         "question": question_text,
         "answer": answer,
         "context_used": _context_used(
@@ -1039,6 +1054,10 @@ def analyze_videos(
     temperature: Optional[float] = None,
     system_prompt: Optional[str] = None,
     upload_timeout_s: int = 300,
+    thinking_level: Optional[
+        Literal["minimal", "low", "medium", "high"]
+    ] = DEFAULT_VIDEO_THINKING_LEVEL,
+    max_output_tokens: Optional[int] = DEFAULT_VIDEO_MAX_OUTPUT_TOKENS,
 ) -> dict[str, Any]:
     """Ask one grounded question across two to ten ordered videos.
 
@@ -1060,10 +1079,15 @@ def analyze_videos(
         style_refs: Optional shared style image references.
         fps: Sampling rate applied independently to every video. Default None
             lets Gemini choose; valid explicit range is (0, 24].
-        model: Gemini model id. Default ``gemini-3.6-flash``.
+        model: Gemini model id. Default ``gemini-3.7-flash``.
         temperature: Optional sampling override.
         system_prompt: Override the default analyze-mode instruction.
         upload_timeout_s: Per-file Files API processing timeout.
+        thinking_level: Gemini reasoning depth. Defaults to ``high``. Pass
+            ``None`` to use the model/API default.
+        max_output_tokens: Maximum output budget; thinking can consume this
+            budget on thinking models. Defaults to 65,536. Pass ``None`` to
+            use the model/API default.
 
     Returns:
         The resolved ordered paths and labels, model/fps, original question,
@@ -1115,6 +1139,8 @@ def analyze_videos(
             system_instruction=system_instruction,
             contents=contents,
             temperature=temperature,
+            thinking_level=thinking_level,
+            max_output_tokens=max_output_tokens,
         )
     finally:
         for uploaded in uploaded_files:
@@ -1136,6 +1162,8 @@ def analyze_videos(
         "video_paths": resolved_paths,
         "video_labels": normalized_labels,
         "fps": fps,
+        "thinking_level": thinking_level,
+        "max_output_tokens": max_output_tokens,
         "question": question_text,
         "answer": answer,
         "context_used": context_used,
@@ -1182,7 +1210,7 @@ def compare_images(
             comparison to weight (e.g., "I'm only worried about style_lock
             this round; ignore composition variance").
         criteria: Override the default 6-dim list.
-        model: Gemini model id. Default ``gemini-3.6-flash``.
+        model: Gemini model id. Default ``gemini-3.7-flash``.
         temperature: Optional sampling override; omitted by default.
         system_prompt: Override the default comparison-mode instruction.
 
@@ -1281,7 +1309,7 @@ def extract_visual_tokens(
         intent: Optional brief — focuses the extraction (e.g., "I'm only
             interested in tokens relevant to teal-orange grade and
             anamorphic optics, skip color-palette specifics").
-        model: Gemini model id. Default ``gemini-3.6-flash``.
+        model: Gemini model id. Default ``gemini-3.7-flash``.
         temperature: Optional sampling override; omitted by default.
         system_prompt: Override the default extraction instruction.
 

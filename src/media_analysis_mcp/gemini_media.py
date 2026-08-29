@@ -267,6 +267,8 @@ def call_unstructured(
     system_instruction: str,
     contents: list[Any],
     temperature: Optional[float] = None,
+    thinking_level: Optional[str] = None,
+    max_output_tokens: Optional[int] = None,
 ) -> str:
     """Make a free-form (no response schema) call to Gemini and return the
     response text. Companion to ``call_structured`` for the analyze_* tools.
@@ -280,6 +282,12 @@ def call_unstructured(
     }
     if temperature is not None:
         config_kwargs["temperature"] = temperature
+    if thinking_level is not None:
+        config_kwargs["thinking_config"] = {
+            "thinking_level": thinking_level,
+        }
+    if max_output_tokens is not None:
+        config_kwargs["max_output_tokens"] = max_output_tokens
     config = gtypes.GenerateContentConfig(**config_kwargs)
     response = client.models.generate_content(
         model=model,

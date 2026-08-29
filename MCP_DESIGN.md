@@ -271,24 +271,25 @@ Returns the result dict from `generate_image_job` verbatim — with `system_prom
 
 This is **not a wrapper around `cli.py:generate_job`.** Veo and Seedance share neither parameter shape nor output handling. The video tool is a new Seedance-specific adapter living in `gemini_video_prompts_mcp/seedance.py`.
 
-**Signature** (matching the Seedance 2.0 Replicate input schema, with mutual-exclusivity validated at tool entry):
+**Signature** (matching the Seedance 2.5 Replicate input schema; 2.0 limits in parentheses. Per-model limits live in `seedance.SEEDANCE_SPECS` and are selected by `model`; mutual-exclusivity validated at tool entry):
 
 ```python
 def generate_video(
     prompt: str,
-    model: str = "bytedance/seedance-2.0",
-    # First/last-frame inputs (mutually exclusive with reference_images)
+    model: str = "bytedance/seedance-2.5",          # or "bytedance/seedance-2.0"; anything else → INVALID_INPUT
+    # First/last-frame inputs. 2.5: mutually exclusive with ALL reference_* (2.0: only with reference_images)
     image: Optional[str] = None,                    # first frame
     last_frame_image: Optional[str] = None,         # last frame; requires image
     # Image references — identity, style, or composition (mutually exclusive with image/last_frame_image)
-    reference_images: Optional[List[str]] = None,   # ≤9, prompt tokens [Image1]..[Image9]
-    # Motion/audio references (layerable on either mode above; not mutually exclusive)
-    reference_videos: Optional[List[str]] = None,   # ≤3, total ≤15s, [Video1]..[Video3]
-    reference_audios: Optional[List[str]] = None,   # ≤3, total ≤15s, [Audio1]..[Audio3]
+    reference_images: Optional[List[str]] = None,   # ≤30 (2.0: ≤9), prompt tokens [Image1]..
+    # Motion/audio references. 2.5: omni_reference only (2.0: layerable on a first frame too)
+    reference_videos: Optional[List[str]] = None,   # ≤10, combined ≤30s (2.0: ≤3, ≤15s), [Video1]..
+    reference_audios: Optional[List[str]] = None,   # ≤10, combined ≤30s (2.0: ≤3, ≤15s), [Audio1]..
     # Output controls
-    duration: int = 5,                              # 4..15, or -1 for "intelligent"
-    resolution: str = "720p",                       # "480p" | "720p" | "1080p"
-    aspect_ratio: str = "16:9",                     # "16:9"|"4:3"|"1:1"|"3:4"|"9:16"|"21:9"|"9:21"|"adaptive"
+    duration: int = 5,                              # 4..30 (2.0: 4..15), or -1 for "intelligent"; editing wants -1
+    resolution: str = "720p",                       # "480p" | "720p" (2.0 also "1080p" | "4k")
+    aspect_ratio: Optional[str] = None,             # "16:9"|"4:3"|"1:1"|"3:4"|"9:16"|"21:9"|"adaptive" (2.0 also "9:21")
+                                                    # None → "adaptive" if image set, else "16:9"; explicit values pass through
     generate_audio: bool = False,                   # NB: schema default true; we override to false
     seed: Optional[int] = None,
     title: Optional[str] = None,
@@ -300,13 +301,14 @@ def generate_video(
 
 **Validation at tool entry** (raise `INVALID_INPUT: <message>`):
 
+- `model` not in `SEEDANCE_SPECS` → unsupported model (the param shape is Seedance-specific)
 - `image` or `last_frame_image` set AND any of `reference_images` set → mutually exclusive per schema
+- **2.5 only:** `image` or `last_frame_image` set AND any of `reference_videos`/`reference_audios` set → mutually exclusive (first/last-frame mode excludes all references)
 - `last_frame_image` set without `image` → "last_frame_image requires a first frame"
-- `len(reference_images) > 9`, `len(reference_videos) > 3`, `len(reference_audios) > 3` → per-type cap exceeded (schema-enforced)
-- `duration` not in `{-1, 4..15}` → out of range
+- per-type caps exceeded (schema-enforced): 2.5 `30 / 10 / 10`, 2.0 `9 / 3 / 3` for images / videos / audios
+- `duration` not in `{-1, 4..max}` (max 30 on 2.5, 15 on 2.0) → out of range
 - `reference_audios` set but no `image`/`reference_images`/`reference_videos` → schema requires anchor
-- `resolution` not in `{"480p","720p","1080p"}` → invalid
-- `aspect_ratio` not in the schema enum → invalid
+- `resolution` / `aspect_ratio` not in the model's enum → invalid
 
 Strictness here is deliberate: Replicate rejects invalid combos with opaque API errors. We want a clean MCP error code instead.
 
@@ -474,7 +476,7 @@ Reads from environment (with `.env` fallback via `python-dotenv`, already loaded
 - `REPLICATE_API_TOKEN` — required when `generate_video` is called
 - `GEMINI_IMAGE_MODEL` — optional default override (already honored by `cli.py:339`)
 
-`GEMINI_VIDEO_MODEL` is no longer consulted (Veo retired); Seedance model_ref is `bytedance/seedance-2.0` constant unless overridden via the tool's `model` arg.
+`GEMINI_VIDEO_MODEL` is no longer consulted (Veo retired); Seedance model_ref is `bytedance/seedance-2.5` constant unless overridden via the tool's `model` arg (`bytedance/seedance-2.0` is the other supported value).
 
 System dep: `ffprobe` (typically installed alongside `ffmpeg` — `brew install ffmpeg` on Mac).
 
@@ -535,14 +537,15 @@ System dep: `ffmpeg` + `ffprobe` (`brew install ffmpeg` on Mac). README document
 
 | Tool | Default model | Purpose | Who judges? |
 |------|---------------|---------|-------------|
-| `describe_image` | `gemini-3.6-flash` | Rich structured observations of one image; no scores | **Claude** — consumes the description, applies the rubric herself |
-| `score_image` | `gemini-3.6-flash` | 6-dim scored eval of one image; advisory `decision_hint` | **Gemini** — Claude can override |
-| `describe_video` | `gemini-3.6-flash` | Rich structured observations of one video; video-aware fields | **Claude** |
-| `score_video` | `gemini-3.6-flash` | 6-dim scored eval of one video, dims adapted per skill SKILL.md:290-300 | **Gemini** |
-| `analyze_videos` | `gemini-3.6-flash` | Free-form cross-video question over 2–10 ordered, labeled videos | **Claude** |
-| `analyze_audio` | `gemini-3.6-flash` | Free-form auditory analysis or transcription of one recording | **Claude** |
-| `compare_images` | `gemini-3.6-flash` | "Which is better"; pick + reasoning | **Gemini** |
-| `extract_visual_tokens` | `gemini-3.6-flash` | Categorized token deconstruct for env-coverage genesis workflow | **Gemini (descriptive)** |
+| `describe_image` | `gemini-3.7-flash` | Rich structured observations of one image; no scores | **Claude** — consumes the description, applies the rubric herself |
+| `score_image` | `gemini-3.7-flash` | 6-dim scored eval of one image; advisory `decision_hint` | **Gemini** — Claude can override |
+| `describe_video` | `gemini-3.7-flash` | Rich structured observations of one video; video-aware fields | **Claude** |
+| `score_video` | `gemini-3.7-flash` | 6-dim scored eval of one video, dims adapted per skill SKILL.md:290-300 | **Gemini** |
+| `analyze_video` | `gemini-3.7-flash` | Free-form question over one video; defaults to high thinking and 65,536 max output tokens | **Claude** |
+| `analyze_videos` | `gemini-3.7-flash` | Free-form cross-video question over 2–10 ordered, labeled videos; defaults to high thinking and 65,536 max output tokens | **Claude** |
+| `analyze_audio` | `gemini-3.7-flash` | Free-form auditory analysis or transcription of one recording | **Claude** |
+| `compare_images` | `gemini-3.7-flash` | "Which is better"; pick + reasoning | **Gemini** |
+| `extract_visual_tokens` | `gemini-3.7-flash` | Categorized token deconstruct for env-coverage genesis workflow | **Gemini (descriptive)** |
 | `extract_video_frames` | — (no model) | ffmpeg subprocess; timestamp → PNG list | — |
 
 **Why both `describe` and `score`.** `describe_image` lets Claude do the judgment using conversation-private context. `score_image` lets Gemini do the judgment when Claude wants a fast structured verdict. They wrap the same Gemini call internally — only the system instruction + response schema differs. A/B testing which produces better real-world iteration outcomes is the empirical question this design supports.
@@ -560,7 +563,7 @@ context: Optional[str] = None         # case-specific freeform notes — prior i
 base_plate_path: Optional[str] = None # for preservation_fidelity (mutation eval)
 identity_refs: Optional[List[str]] = None   # for identity carry-through eval
 style_refs: Optional[List[str]] = None      # for style_lock comparison
-model: str = "gemini-3.6-flash"
+model: str = "gemini-3.7-flash"
 temperature: Optional[float] = None         # opt-in sampling override
 system_prompt: Optional[str] = None         # rare override for model behavior
 ```
@@ -585,7 +588,7 @@ Returns:
 
 ```jsonc
 {
-  "model": "gemini-3.6-flash",
+  "model": "gemini-3.7-flash",
   "image_path": "/path/to/image.png",
   "observations": {
     "composition": "Wide isometric establishing shot. Central machine dominates the frame; supermarket facade in background. Cars arranged in tidy rows along the left and right edges; the foreground asphalt is mostly empty.",
@@ -619,7 +622,7 @@ Returns:
 
 ```jsonc
 {
-  "model": "gemini-3.6-flash",
+  "model": "gemini-3.7-flash",
   "image_path": "/path/to/image.png",
   "evaluations": {
     "prompt_fidelity":         { "score": 75, "notes": "Wide lot ✓, machine ✓..." },
@@ -655,7 +658,7 @@ def compare_images(
     intent: Optional[str] = None,
     context: Optional[str] = None,
     criteria: Optional[List[str]] = None,
-    model: str = "gemini-3.6-flash",
+    model: str = "gemini-3.7-flash",
 ) -> dict
 ```
 
@@ -677,7 +680,7 @@ def extract_visual_tokens(
     image_path: str,
     categories: Optional[List[str]] = None,    # default: TOKEN_CATEGORIES
     intent: Optional[str] = None,              # focuses the extraction
-    model: str = "gemini-3.6-flash",
+    model: str = "gemini-3.7-flash",
 ) -> dict
 ```
 
@@ -691,7 +694,7 @@ Returns:
 
 ```jsonc
 {
-  "model": "gemini-3.6-flash",
+  "model": "gemini-3.7-flash",
   "image_path": "/path/to/image.png",
   "tokens": {
     "lighting":        ["high-key commercial", "warm key light", "no cast shadows"],
@@ -789,7 +792,7 @@ Step 0 was the critical unlock: without it, Step 2 would have had to fake CLI in
 |---|----------|--------|
 | 1 | Sibling package layout vs. separate repo for MCP #1 | **Closed** — sibling |
 | 2 | One gen MCP vs. split image/video | **Closed** — one |
-| 3 | Seedance default | **Closed** — `bytedance/seedance-2.0` |
+| 3 | Seedance default | **Closed** — `bytedance/seedance-2.5` (since 2026-08-28; was 2.0). 2.0 retained in `SEEDANCE_SPECS` for 1080p/4k |
 | 4 | Whether `generate_video` blocks or returns `prediction_id` | **Closed for v1** — block until completion or timeout |
 | 5 | `decision_hint` opinionated or omit | **Closed** — include, advisory-only |
 | 6 | Embed Patrick's `seedance-prompting` skill in `generate_video` docstring | **Closed** — no, skill loads on its own |
@@ -800,7 +803,7 @@ Step 0 was the critical unlock: without it, Step 2 would have had to fake CLI in
 | 11 | Reference shape: flat list vs. three named args | **Closed** — three named args (`base_plate_path`, `identity_refs`, `style_refs`) |
 | 12 | Single `analyze_image` tool vs. `describe`/`score` split | **Closed** — split, with shared backend |
 | 13 | Convenience `analyze_image` wrapper | **Closed** — no, force explicit choice |
-| 14 | Default model for analysis tools | **Closed** — `gemini-3.6-flash` for image, video, and audio tools |
+| 14 | Default model for analysis tools | **Closed** — `gemini-3.7-flash` for image, video, and audio tools |
 | 15 | `intent` + `context` as separate inputs vs. single freeform field | **Closed** — separate (different lifetimes, different routing) |
 | 16 | Frame extraction tool location | **Closed** — inside `media-analysis-mcp` |
 
@@ -951,22 +954,48 @@ Deferred from v1/v2 unless specifically needed:
 
 ---
 
-## Schema reference — Seedance 2.0 (Replicate)
+## Schema reference — Seedance 2.5 (Replicate)
 
-Captured 2026-05-08 from `bytedance/seedance-2.0` Replicate input schema. Source of truth for the `generate_video` tool signature.
+Captured 2026-08-28 from `bytedance/seedance-2.5` Replicate input schema (latest version `ca38262b…`). Source of truth for the `generate_video` tool signature and `seedance.SEEDANCE_SPECS["bytedance/seedance-2.5"]`.
 
-**Required:** `prompt`
+**Required:** nothing at the schema level — `prompt` is optional when a media input is supplied. The adapter still requires `prompt` (the reference-token warnings and title derivation depend on it).
 
 **Mutually exclusive groups:**
 - Group A: `image`, `last_frame_image` (`last_frame_image` requires `image`)
-- Group B: `reference_images`
-- A and B cannot both be set.
+- Group B: `reference_images`, `reference_videos`, `reference_audios`
+- A and B cannot both be set. **This is stricter than 2.0**, where videos/audios could layer on a first frame.
 
-**Anchored requirement:** `reference_audios` requires at least one of `image` / `reference_images` / `reference_videos`.
+**Adaptive "requirement" — schema text, not live behavior:** the schema says "First/last-frame, editing, and extension modes require `'adaptive'`." Live-probed 2026-08-29: `image` + explicit `aspect_ratio="16:9"` was **accepted** and rendered normally (third schema-vs-live drift on this surface). So the adapter does **not** enforce it; the tool's `aspect_ratio=None` default resolves to `adaptive` whenever `image` is set (the frame's ratio wins), and any explicit value passes through. See LIVE_VERIFICATION.md.
 
-**Total cap (vault, not schema):** `len(reference_images) + len(reference_videos) + len(reference_audios) ≤ 12` per `seedance-prompting-guide.md:23`. Per-type caps sum to 15 (9+3+3); 12 is the working ceiling. Replicate's schema does not enforce this — we surface it as a soft `validation_warning`, never a hard error, to keep portability beyond Patrick's vault.
+**Anchored requirement:** `reference_audios` requires at least one of `reference_images` / `reference_videos` (`image` is no longer a valid anchor on 2.5 because of Group A/B exclusivity).
 
-**Field summary:**
+**Not exposed (yet):** `watermark` (bool, default false) and `output_format` (`mp4` | `mov`, default `mp4`). Both are plain passthroughs if a workflow wants them.
+
+**Total cap (vault, not schema):** the soft `validation_warning` at 12 total references is unchanged. It was written against 2.0's 9+3+3; 2.5 permits 30+10+10, but the guide's diminishing-returns advice past ~12 refs still stands, so the warning stays model-independent.
+
+**Field summary (2.5; 2.0 differences in the last column):**
+
+| Field | Type | Constraints | Default | 2.0 |
+|-------|------|-------------|---------|-----|
+| `prompt` | string | optional with media | `""` | required, ≤4000 chars |
+| `seed` | int? | nullable; "reproducibility is not guaranteed" | null | same |
+| `image` | uri? | first frame; mut.ex. with all `reference_*` | null | mut.ex. with `reference_images` only |
+| `last_frame_image` | uri? | requires `image`; mut.ex. with all `reference_*` | null | mut.ex. with `reference_images` only |
+| `reference_images` | uri[] | ≤30; mut.ex. with `image`/`last_frame_image`; `[Image1]..` | `[]` | ≤9 |
+| `reference_videos` | uri[] | ≤10, combined ≤30s; motion/style/editing/extension; `[Video1]..` | `[]` | ≤3, ≤15s |
+| `reference_audios` | uri[] | ≤10, combined ≤30s; needs anchor; `[Audio1]..` | `[]` | ≤3, ≤15s |
+| `duration` | int | -1 or 4..30 (-1 = "intelligent"; editing requires -1) | 5 | 4..15 |
+| `resolution` | enum | `480p` / `720p` | `720p` | also `1080p` / `4k` |
+| `aspect_ratio` | enum | `16:9`/`4:3`/`1:1`/`3:4`/`9:16`/`21:9`/`adaptive`; schema says frames need `adaptive`, live accepts any | `16:9` | also `9:21` |
+| `generate_audio` | bool | dialogue (double-quoted in prompt) + SFX + music | **`true`** (we override to `false`) | same |
+| `watermark` | bool | not exposed by the tool | `false` | absent |
+| `output_format` | enum | `mp4` / `mov`; not exposed by the tool | `mp4` | absent |
+
+### Seedance 2.0 (retained)
+
+Captured 2026-05-08 from `bytedance/seedance-2.0`. Still selectable via `model="bytedance/seedance-2.0"`; its limits are the "2.0" column above and `SEEDANCE_SPECS["bytedance/seedance-2.0"]`. The original 2.0 field table follows for reference.
+
+**Field summary (2.0):**
 
 | Field | Type | Constraints | Default |
 |-------|------|-------------|---------|

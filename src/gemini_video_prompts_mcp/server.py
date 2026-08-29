@@ -2,7 +2,7 @@
 
 Tools:
 - generate_image  — Gemini image generation (wraps generate_image_job)
-- generate_video  — Seedance 2.0 via Replicate (uses seedance.py adapter)
+- generate_video  — Seedance 2.5 / 2.0 via Replicate (uses seedance.py adapter)
 - start_video_job, get_video_job, cancel_video_job
                   — local async control surface for Seedance predictions
 - get_generation, list_generations
@@ -387,7 +387,7 @@ def _build_video_context(
     reference_audios: Optional[list[str]],
     duration: int,
     resolution: str,
-    aspect_ratio: str,
+    aspect_ratio: Optional[str],
     generate_audio: bool,
     seed: Optional[int],
     title: Optional[str],
@@ -405,6 +405,7 @@ def _build_video_context(
         aspect_ratio=aspect_ratio,
         generate_audio=generate_audio,
         seed=seed,
+        model=model,
     )
     references = seedance.build_references_map(
         image=image,
@@ -428,7 +429,7 @@ def _build_video_context(
     resolved_params = {
         "duration": duration,
         "resolution": resolution,
-        "aspect_ratio": aspect_ratio,
+        "aspect_ratio": api_params["aspect_ratio"],  # resolved if caller left it None
         "generate_audio": generate_audio,
         "seed": seed,
     }
@@ -717,7 +718,7 @@ def generate_video(
     reference_audios: Optional[list[str]] = None,
     duration: int = 5,
     resolution: str = "720p",
-    aspect_ratio: str = "16:9",
+    aspect_ratio: Optional[str] = None,
     generate_audio: bool = False,
     seed: Optional[int] = None,
     title: Optional[str] = None,
@@ -725,7 +726,7 @@ def generate_video(
     timeout_s: int = 600,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Generate a video with Seedance 2.0 via Replicate.
+    """Generate a video with Seedance 2.5 (or 2.0) via Replicate.
 
     Wraps the Seedance adapter (``seedance.py``) — param mapping, multi-file
     handle lifecycle, sidecar sanitization, ffprobe ``media_info`` per output.
@@ -741,19 +742,28 @@ def generate_video(
     tokens — paste them verbatim into the prompt rather than translating.
 
     Args:
-        prompt: Text prompt for video generation.
-        model: Replicate model_ref. Default ``bytedance/seedance-2.0``.
-        image: First frame (img2vid). Mutually exclusive with reference_images.
-        last_frame_image: Last frame; requires image. Mut.ex. with reference_images.
-        reference_images: Up to 9 reference image paths (identity, style, or
-            composition). Mut.ex. with image/last_frame_image.
-        reference_videos: Up to 3 reference video paths; total ≤ 15s.
-            Layerable on either mode above.
-        reference_audios: Up to 3 reference audio paths; total ≤ 15s. Requires
-            an anchor (image / reference_images / reference_videos).
-        duration: 4..15 seconds, or -1 for the model's "intelligent" length.
-        resolution: ``"480p"`` | ``"720p"`` | ``"1080p"`` | ``"4k"`` (10-bit H.265).
-        aspect_ratio: One of the Seedance enum values (incl. ``"adaptive"``).
+        prompt: Text prompt for video generation. Put dialogue in double
+            quotes; cite references by token (``[Image1]``, ``[Video1]``).
+        model: Replicate model_ref. Default ``bytedance/seedance-2.5``;
+            ``bytedance/seedance-2.0`` is still supported (it is the only one
+            with 1080p/4k). Limits below are 2.5's; 2.0's are in parentheses.
+        image: First frame (img2vid). On 2.5 mutually exclusive with ALL
+            ``reference_*`` inputs (2.0: only with reference_images).
+        last_frame_image: Last frame; requires image. Same exclusivity as image.
+        reference_images: Up to 30 (2.0: 9) reference image paths (identity,
+            style, or composition). Mut.ex. with image/last_frame_image.
+        reference_videos: Up to 10 (2.0: 3) reference video paths; combined
+            ≤ 30s (2.0: 15s). Motion transfer, style, editing, extension.
+            Editing mode wants ``duration=-1``.
+        reference_audios: Up to 10 (2.0: 3) reference audio paths; combined
+            ≤ 30s (2.0: 15s). Requires an anchor (reference_images /
+            reference_videos; on 2.0 also image).
+        duration: 4..30 (2.0: 4..15) seconds, or -1 for "intelligent" length.
+        resolution: ``"480p"`` | ``"720p"`` (2.0 also ``"1080p"`` | ``"4k"``).
+        aspect_ratio: ``16:9``/``4:3``/``1:1``/``3:4``/``9:16``/``21:9``/
+            ``adaptive`` (2.0 also ``9:21``). Leave unset to get ``"adaptive"``
+            when a first frame is given (the frame's own ratio wins) and
+            ``"16:9"`` otherwise. Explicit values are passed through as-is.
         generate_audio: If True, Seedance generates synchronized audio.
             Default False (production typically replaces with edited score).
         seed: Optional reproducibility seed.
@@ -771,8 +781,9 @@ def generate_video(
         ``model_version``, plus ``status: "planned"`` and ``projected_job_dir``.
 
     Raises:
-        RuntimeError: with codes ``INVALID_INPUT`` (mut.ex., per-type cap,
-        range, enum, anchor), ``FILE_NOT_FOUND`` (real run only),
+        RuntimeError: with codes ``INVALID_INPUT`` (unsupported model,
+        mut.ex., per-type cap, range, enum, anchor), ``FILE_NOT_FOUND``
+        (real run only),
         ``REPLICATE_ERROR`` (Replicate API failure),
         ``REPLICATE_NOT_INSTALLED`` / ``REPLICATE_API_TOKEN_MISSING``.
     """
@@ -789,6 +800,7 @@ def generate_video(
         aspect_ratio=aspect_ratio,
         generate_audio=generate_audio,
         seed=seed,
+        model=model,
     )
 
     references = seedance.build_references_map(
@@ -816,7 +828,7 @@ def generate_video(
     resolved_params = {
         "duration": duration,
         "resolution": resolution,
-        "aspect_ratio": aspect_ratio,
+        "aspect_ratio": api_params["aspect_ratio"],  # resolved if caller left it None
         "generate_audio": generate_audio,
         "seed": seed,
     }
@@ -933,7 +945,7 @@ def start_video_job(
     reference_audios: Optional[list[str]] = None,
     duration: int = 5,
     resolution: str = "720p",
-    aspect_ratio: str = "16:9",
+    aspect_ratio: Optional[str] = None,
     generate_audio: bool = False,
     seed: Optional[int] = None,
     title: Optional[str] = None,
@@ -942,8 +954,10 @@ def start_video_job(
 ) -> dict[str, Any]:
     """Start a Seedance video job and return immediately.
 
-    This is the local-async counterpart to ``generate_video``. It validates
-    inputs, creates a durable local job record under ``<out_root>/jobs/<job_id>``,
+    This is the local-async counterpart to ``generate_video`` — same inputs,
+    same per-model validation (see ``generate_video`` for the 2.5 / 2.0
+    limits). It validates inputs, creates a durable local job record under
+    ``<out_root>/jobs/<job_id>``,
     starts a non-blocking Replicate prediction, and returns the current status.
     Use ``get_video_job(job_id)`` to poll or collect completed outputs.
 
