@@ -1,8 +1,13 @@
-"""Seedance 2.0 (Replicate) adapter for the gemini-prompts-mcp generate_video tool.
+"""Seedance (Replicate) adapter for the gemini-prompts-mcp generate_video tool.
+
+Supports ``bytedance/seedance-2.5`` (default) and ``bytedance/seedance-2.0``;
+per-model schema differences live in ``SEEDANCE_SPECS`` and are selected by
+the ``model`` argument to ``build_seedance_video_params``.
 
 Owns:
 - Replicate-shape param mapping from MCP tool inputs
-- Hard validation per MCP_DESIGN.md (mut.ex., per-type caps, range checks)
+- Hard validation per MCP_DESIGN.md (mut.ex., per-type caps, range checks),
+  parameterized per model via ``SeedanceSpec``
 - Soft warnings (12-file vault cap, prompt-token mismatches)
 - Mode derivation (text_to_video / first_last_frames / omni_reference)
 - References map ([{token, path, role}] in upload order, bracket-syntax tokens)
@@ -26,24 +31,99 @@ import re
 import struct
 import subprocess
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
 from . import replicate_min
 
 
-SEEDANCE_MODEL_DEFAULT = "bytedance/seedance-2.0"
+SEEDANCE_MODEL_DEFAULT = "bytedance/seedance-2.5"
 
-VALID_RESOLUTIONS = {"480p", "720p", "1080p", "4k"}  # "4k" = 10-bit H.265/HEVC, high bitrate
-VALID_ASPECT_RATIOS = {"16:9", "4:3", "1:1", "3:4", "9:16", "21:9", "9:21", "adaptive"}
 
-# Per-type schema caps (hard — Replicate enforces these)
-MAX_REFERENCE_IMAGES = 9
-MAX_REFERENCE_VIDEOS = 3
-MAX_REFERENCE_AUDIOS = 3
+@dataclass(frozen=True)
+class SeedanceSpec:
+    """Per-model schema facts that drive hard validation.
+
+    Captured from each model's Replicate input schema (see MCP_DESIGN.md
+    "Schema reference"). Everything here is provider-enforced; the adapter
+    mirrors it so a bad call fails instantly and specifically instead of as
+    an opaque server error 30-60s in.
+    """
+
+    slug: str
+    max_duration: int  # seconds; -1 ("intelligent") is always allowed too
+    resolutions: frozenset[str]
+    aspect_ratios: frozenset[str]
+    max_reference_images: int
+    max_reference_videos: int
+    max_reference_audios: int
+    # Combined duration ceiling per reference type (videos, audios). Not
+    # checked locally (would need ffprobe on every ref); surfaced in docs.
+    max_reference_media_seconds: int
+    # 2.0: image/last_frame_image are mut.ex. with reference_images only —
+    # reference_videos/audios may layer on top of a first frame.
+    # 2.5: image/last_frame_image are mut.ex. with ALL reference_* inputs.
+    frames_exclusive_with_all_references: bool
+    # NB: the 2.5 schema text says first/last-frame mode "requires 'adaptive'"
+    # aspect_ratio. Live-probed 2026-08-29: the endpoint accepts image +
+    # "16:9" fine (LIVE_VERIFICATION.md), so this is deliberately NOT a hard
+    # rule — ``default_aspect_ratio`` merely prefers "adaptive" when unset.
+
+
+SEEDANCE_SPECS: dict[str, SeedanceSpec] = {
+    "bytedance/seedance-2.0": SeedanceSpec(
+        slug="bytedance/seedance-2.0",
+        max_duration=15,
+        # "4k" = 10-bit H.265/HEVC, high bitrate
+        resolutions=frozenset({"480p", "720p", "1080p", "4k"}),
+        aspect_ratios=frozenset(
+            {"16:9", "4:3", "1:1", "3:4", "9:16", "21:9", "9:21", "adaptive"}
+        ),
+        max_reference_images=9,
+        max_reference_videos=3,
+        max_reference_audios=3,
+        max_reference_media_seconds=15,
+        frames_exclusive_with_all_references=False,
+    ),
+    "bytedance/seedance-2.5": SeedanceSpec(
+        slug="bytedance/seedance-2.5",
+        max_duration=30,
+        resolutions=frozenset({"480p", "720p"}),
+        aspect_ratios=frozenset(
+            {"16:9", "4:3", "1:1", "3:4", "9:16", "21:9", "adaptive"}
+        ),
+        max_reference_images=30,
+        max_reference_videos=10,
+        max_reference_audios=10,
+        max_reference_media_seconds=30,
+        frames_exclusive_with_all_references=True,
+    ),
+}
+
+
+def resolve_spec(model_ref: str) -> SeedanceSpec:
+    """Look up the ``SeedanceSpec`` for a Replicate model_ref.
+
+    Accepts ``owner/name`` or ``owner/name:version``. Raises ``INVALID_INPUT``
+    for models this adapter has no schema for — the param shape below is
+    Seedance-specific, so silently forwarding to an unknown model would only
+    move the failure server-side.
+    """
+    slug = model_ref.split(":", 1)[0].strip()
+    spec = SEEDANCE_SPECS.get(slug)
+    if spec is None:
+        raise RuntimeError(
+            f"INVALID_INPUT: unsupported Seedance model {model_ref!r}; "
+            f"supported: {sorted(SEEDANCE_SPECS)}"
+        )
+    return spec
+
 
 # Vault working ceiling (soft warning) — seedance-prompting-guide.md:23.
-# Per-type caps sum to 15 (9+3+3); 12 is the production-practice ceiling.
+# Written against 2.0's per-type caps (9+3+3=15); 12 is the production-
+# practice ceiling. Kept model-independent: 2.5 permits far more (30+10+10),
+# but the guide's advice about diminishing returns past ~12 refs still stands.
 TOTAL_REFERENCE_WARNING_CAP = 12
 
 _SEED_LOG_RE = re.compile(r"\bUsing seed:\s*(-?\d+)\b", re.IGNORECASE)
@@ -196,6 +276,19 @@ def build_references_map(
     return refs
 
 
+def default_aspect_ratio(
+    *, image: Optional[str], last_frame_image: Optional[str] = None
+) -> str:
+    """Aspect ratio to use when the caller leaves it unset.
+
+    ``"adaptive"`` for first/last-frame mode (the frame's own ratio wins; the
+    2.5 schema text recommends it), ``"16:9"`` otherwise. Model-independent.
+    """
+    if image is not None or last_frame_image is not None:
+        return "adaptive"
+    return "16:9"
+
+
 def build_seedance_video_params(
     *,
     prompt: str,
@@ -206,31 +299,58 @@ def build_seedance_video_params(
     reference_audios: Optional[list[str]] = None,
     duration: int = 5,
     resolution: str = "720p",
-    aspect_ratio: str = "16:9",
+    aspect_ratio: Optional[str] = None,
     generate_audio: bool = False,
     seed: Optional[int] = None,
+    model: str = SEEDANCE_MODEL_DEFAULT,
 ) -> dict[str, Any]:
     """Validate inputs and return a string-only Replicate-shaped params dict.
 
     Pure: no I/O, no file handles. Caller (``run_seedance_job``) opens
     handles for each path before invoking ``replicate.run``.
 
+    ``model`` selects the ``SeedanceSpec`` (caps, enums, exclusivity rules)
+    the inputs are validated against; the params dict shape is the same for
+    every supported model.
+
+    ``aspect_ratio=None`` resolves via ``default_aspect_ratio`` — ``"adaptive"``
+    when a first frame is set (the frame's ratio wins), else ``"16:9"``. An
+    explicit value is never rewritten or rejected on ratio grounds. Read the
+    resolved value back from the returned dict.
+
     Raises ``RuntimeError`` with ``INVALID_INPUT:`` prefix for any hard
-    validation failure (mut.ex., per-type caps, range, enum, anchor).
+    validation failure (unsupported model, mut.ex., per-type caps, range,
+    enum, anchor).
     """
+    spec = resolve_spec(model)
+
     if not isinstance(prompt, str) or not prompt.strip():
         raise RuntimeError("INVALID_INPUT: prompt is required")
 
     ref_images = list(reference_images or [])
     ref_videos = list(reference_videos or [])
     ref_audios = list(reference_audios or [])
+    has_frames = image is not None or last_frame_image is not None
+    if aspect_ratio is None:
+        aspect_ratio = default_aspect_ratio(image=image, last_frame_image=last_frame_image)
 
-    # Mutual exclusivity (Seedance schema): only reference_images is
-    # mut.ex. with image/last_frame_image. Videos/audios can layer on top.
-    if (image is not None or last_frame_image is not None) and ref_images:
+    # Mutual exclusivity. 2.0: only reference_images is mut.ex. with
+    # image/last_frame_image (videos/audios can layer on top). 2.5: a first
+    # frame excludes every reference type.
+    if has_frames and ref_images:
         raise RuntimeError(
             "INVALID_INPUT: image / last_frame_image are mutually exclusive "
             "with reference_images"
+        )
+    if spec.frames_exclusive_with_all_references and has_frames and (
+        ref_videos or ref_audios
+    ):
+        raise RuntimeError(
+            f"INVALID_INPUT: {spec.slug} does not allow image / "
+            "last_frame_image together with reference_videos / "
+            "reference_audios (first/last-frame mode is exclusive with all "
+            "references). Move the first frame into reference_images and "
+            "cite it as [Image1], or drop the video/audio references."
         )
 
     # last_frame_image requires a first frame
@@ -240,39 +360,40 @@ def build_seedance_video_params(
         )
 
     # Per-type schema caps
-    if len(ref_images) > MAX_REFERENCE_IMAGES:
+    if len(ref_images) > spec.max_reference_images:
         raise RuntimeError(
-            f"INVALID_INPUT: reference_images exceeds per-type cap "
-            f"({len(ref_images)} > {MAX_REFERENCE_IMAGES})"
+            f"INVALID_INPUT: reference_images exceeds {spec.slug} per-type cap "
+            f"({len(ref_images)} > {spec.max_reference_images})"
         )
-    if len(ref_videos) > MAX_REFERENCE_VIDEOS:
+    if len(ref_videos) > spec.max_reference_videos:
         raise RuntimeError(
-            f"INVALID_INPUT: reference_videos exceeds per-type cap "
-            f"({len(ref_videos)} > {MAX_REFERENCE_VIDEOS})"
+            f"INVALID_INPUT: reference_videos exceeds {spec.slug} per-type cap "
+            f"({len(ref_videos)} > {spec.max_reference_videos})"
         )
-    if len(ref_audios) > MAX_REFERENCE_AUDIOS:
+    if len(ref_audios) > spec.max_reference_audios:
         raise RuntimeError(
-            f"INVALID_INPUT: reference_audios exceeds per-type cap "
-            f"({len(ref_audios)} > {MAX_REFERENCE_AUDIOS})"
+            f"INVALID_INPUT: reference_audios exceeds {spec.slug} per-type cap "
+            f"({len(ref_audios)} > {spec.max_reference_audios})"
         )
 
-    # Duration: -1 (intelligent) or 4..15. Replicate's published schema is
-    # looser in some places, but the live Seedance endpoint rejects <4.
-    if duration != -1 and not (4 <= duration <= 15):
+    # Duration: -1 (intelligent) or 4..max. Replicate's published schema says
+    # minimum -1, but the live Seedance endpoint rejects 0..3.
+    if duration != -1 and not (4 <= duration <= spec.max_duration):
         raise RuntimeError(
-            f"INVALID_INPUT: duration must be -1 or in [4, 15] (got {duration})"
+            f"INVALID_INPUT: duration must be -1 or in [4, {spec.max_duration}] "
+            f"for {spec.slug} (got {duration})"
         )
 
     # Resolution / aspect_ratio enum
-    if resolution not in VALID_RESOLUTIONS:
+    if resolution not in spec.resolutions:
         raise RuntimeError(
             f"INVALID_INPUT: resolution must be one of "
-            f"{sorted(VALID_RESOLUTIONS)} (got {resolution!r})"
+            f"{sorted(spec.resolutions)} for {spec.slug} (got {resolution!r})"
         )
-    if aspect_ratio not in VALID_ASPECT_RATIOS:
+    if aspect_ratio not in spec.aspect_ratios:
         raise RuntimeError(
             f"INVALID_INPUT: aspect_ratio must be one of "
-            f"{sorted(VALID_ASPECT_RATIOS)} (got {aspect_ratio!r})"
+            f"{sorted(spec.aspect_ratios)} for {spec.slug} (got {aspect_ratio!r})"
         )
 
     # reference_audios anchor requirement (schema)

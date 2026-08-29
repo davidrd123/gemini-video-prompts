@@ -24,10 +24,17 @@ def test_generate_video_dry_run_modes() -> None:
         reference_videos=["/tmp/motion.mp4"],
         dry_run=True,
     )
-    image_and_video = gen_server.generate_video(
+    first_frame = gen_server.generate_video(
+        prompt="Animate [Image1]",
+        image="/tmp/first.png",
+        dry_run=True,
+    )
+    # 2.0 lets reference_videos layer on top of a first frame; 2.5 does not.
+    image_and_video_20 = gen_server.generate_video(
         prompt="Use [Image1] and [Video1]",
         image="/tmp/first.png",
         reference_videos=["/tmp/motion.mp4"],
+        model="bytedance/seedance-2.0",
         dry_run=True,
     )
     explicit_seed = gen_server.generate_video(
@@ -37,8 +44,20 @@ def test_generate_video_dry_run_modes() -> None:
     )
 
     assert text_only["mode"] == "text_to_video"
+    assert text_only["model"] == "bytedance/seedance-2.5"
+    assert text_only["resolved_params"]["aspect_ratio"] == "16:9"
     assert video_ref["mode"] == "omni_reference"
-    assert image_and_video["mode"] == "first_last_frames"
+    assert first_frame["mode"] == "first_last_frames"
+    assert first_frame["resolved_params"]["aspect_ratio"] == "adaptive"
+    assert image_and_video_20["mode"] == "first_last_frames"
+    assert image_and_video_20["resolved_params"]["aspect_ratio"] == "adaptive"
+    with pytest.raises(RuntimeError, match="^INVALID_INPUT:.*exclusive with all"):
+        gen_server.generate_video(
+            prompt="Use [Image1] and [Video1]",
+            image="/tmp/first.png",
+            reference_videos=["/tmp/motion.mp4"],
+            dry_run=True,
+        )
     assert explicit_seed["seed_provenance"] == {
         "requested_seed": 1234,
         "effective_seed": 1234,
@@ -47,20 +66,98 @@ def test_generate_video_dry_run_modes() -> None:
     }
 
 
+V20 = "bytedance/seedance-2.0"
+V25 = "bytedance/seedance-2.5"
+
+
 @pytest.mark.parametrize(
     "kwargs",
     [
+        # Model-independent rules
         {"prompt": "x", "image": "a.png", "reference_images": ["b.png"]},
         {"prompt": "x", "last_frame_image": "b.png"},
         {"prompt": "x", "duration": 0},
         {"prompt": "x", "duration": 3},
         {"prompt": "x", "reference_audios": ["a.wav"]},
-        {"prompt": "x", "reference_videos": ["1.mp4", "2.mp4", "3.mp4", "4.mp4"]},
+        {"prompt": "x", "model": "someone/other-video-model"},
+        # 2.5 (default) limits
+        {"prompt": "x", "reference_videos": [f"{i}.mp4" for i in range(11)]},
+        {"prompt": "x", "reference_audios": [f"{i}.wav" for i in range(11)],
+         "reference_images": ["a.png"]},
+        {"prompt": "x", "reference_images": [f"{i}.png" for i in range(31)]},
+        {"prompt": "x", "duration": 31},
+        {"prompt": "x", "resolution": "1080p"},
+        {"prompt": "x", "resolution": "4k"},
+        {"prompt": "x", "aspect_ratio": "9:21"},
+        {"prompt": "x", "image": "a.png", "reference_videos": ["m.mp4"]},
+        {"prompt": "x", "image": "a.png", "reference_audios": ["m.wav"]},
+        # 2.0 limits (tighter caps, shorter max duration)
+        {"prompt": "x", "model": V20,
+         "reference_videos": ["1.mp4", "2.mp4", "3.mp4", "4.mp4"]},
+        {"prompt": "x", "model": V20,
+         "reference_images": [f"{i}.png" for i in range(10)]},
+        {"prompt": "x", "model": V20, "duration": 16},
     ],
 )
 def test_seedance_validation_errors_are_coded(kwargs: dict) -> None:
     with pytest.raises(RuntimeError, match="^INVALID_INPUT:"):
         seedance.build_seedance_video_params(**kwargs)
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        # 2.5 (default): larger sets, 30s, first-frame + adaptive
+        {"prompt": "x", "reference_videos": [f"{i}.mp4" for i in range(10)]},
+        {"prompt": "x", "reference_images": [f"{i}.png" for i in range(30)]},
+        {"prompt": "x", "duration": 30},
+        {"prompt": "x", "duration": -1},
+        {"prompt": "x", "image": "a.png", "aspect_ratio": "adaptive"},
+        # Live-probed 2026-08-29: 2.5 accepts an explicit ratio with a first
+        # frame despite the schema text saying it "requires 'adaptive'".
+        {"prompt": "x", "image": "a.png", "aspect_ratio": "16:9"},
+        {"prompt": "x", "image": "a.png", "last_frame_image": "b.png",
+         "aspect_ratio": "1:1"},
+        {"prompt": "x", "image": "a.png", "last_frame_image": "b.png"},
+        {"prompt": "x", "model": f"{V25}:ca38262bae0952bf80a7f10eda58af86"},
+        # 2.0: 4k + 9:21 still valid, image + video layering still valid
+        {"prompt": "x", "model": V20, "resolution": "4k"},
+        {"prompt": "x", "model": V20, "resolution": "1080p", "aspect_ratio": "9:21"},
+        {"prompt": "x", "model": V20, "image": "a.png", "reference_videos": ["m.mp4"]},
+        {"prompt": "x", "model": V20, "image": "a.png", "aspect_ratio": "16:9"},
+        {"prompt": "x", "model": V20, "duration": 15},
+    ],
+)
+def test_seedance_validation_accepts_per_model_limits(kwargs: dict) -> None:
+    params = seedance.build_seedance_video_params(**kwargs)
+    assert params["prompt"] == "x"
+    assert "model" not in params  # model_ref is routing, never a Replicate input
+
+
+def test_seedance_default_aspect_ratio_follows_first_frame() -> None:
+    text = seedance.build_seedance_video_params(prompt="x")
+    framed = seedance.build_seedance_video_params(prompt="x", image="a.png")
+    explicit = seedance.build_seedance_video_params(
+        prompt="x", image="a.png", aspect_ratio="16:9"
+    )
+
+    assert text["aspect_ratio"] == "16:9"
+    assert framed["aspect_ratio"] == "adaptive"
+    assert explicit["aspect_ratio"] == "16:9"  # explicit values are never rewritten
+
+
+def test_seedance_spec_table_matches_replicate_schema() -> None:
+    v25 = seedance.resolve_spec(V25)
+    v20 = seedance.resolve_spec("bytedance/seedance-2.0:a6dcbae88b153e75")
+
+    assert seedance.SEEDANCE_MODEL_DEFAULT == V25
+    assert (v25.max_duration, v20.max_duration) == (30, 15)
+    assert v25.resolutions == {"480p", "720p"}
+    assert v20.resolutions == {"480p", "720p", "1080p", "4k"}
+    assert "9:21" in v20.aspect_ratios and "9:21" not in v25.aspect_ratios
+    assert (v25.max_reference_images, v25.max_reference_videos, v25.max_reference_audios) == (30, 10, 10)
+    assert (v20.max_reference_images, v20.max_reference_videos, v20.max_reference_audios) == (9, 3, 3)
+    assert v25.frames_exclusive_with_all_references and not v20.frames_exclusive_with_all_references
 
 
 def test_seed_provenance_prefers_provider_log_over_echoed_input() -> None:
@@ -113,7 +210,7 @@ def test_seedance_hashes_the_same_open_stream_passed_to_provider(
     params = seedance.build_seedance_video_params(
         prompt="Animate [Image1]",
         image=str(image),
-        aspect_ratio="16:9",
+        aspect_ratio="adaptive",
     )
 
     prediction = seedance.create_seedance_prediction(api_params=params)

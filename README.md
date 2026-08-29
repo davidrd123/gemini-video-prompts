@@ -15,13 +15,14 @@ The repo now has two generation paths:
 - **Standalone CLI** — built around the official `google-genai` Python SDK for
   Gemini image generation and the original Veo video batch flow.
 - **MCP generation server** — `generate_image` reuses the Gemini image worker;
-  `generate_video` uses Seedance 2.0 through Replicate.
+  `generate_video` uses Seedance 2.5 through Replicate (2.0 remains selectable
+  via the `model` arg — it is the only one with 1080p/4k output).
 
 Current defaults:
 
 - CLI video default model: `veo-3.1-fast-generate-preview`
 - CLI/MCP image default model: `gemini-3-pro-image-preview`
-- MCP video default model: `bytedance/seedance-2.0`
+- MCP video default model: `bytedance/seedance-2.5`
 - Media-analysis image default model: `gemini-3.7-flash`
 - Media-analysis video default model: `gemini-3.7-flash`
 
