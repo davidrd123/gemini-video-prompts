@@ -258,6 +258,7 @@ add the tools to a `permissions.allow` list. For a global setup put it in
       "mcp__gemini-prompts__get_generation",
       "mcp__gemini-prompts__list_generations",
       "mcp__media-analysis__analyze_image",
+      "mcp__media-analysis__analyze_images",
       "mcp__media-analysis__analyze_video",
       "mcp__media-analysis__analyze_audio",
       "mcp__media-analysis__analyze_videos",
