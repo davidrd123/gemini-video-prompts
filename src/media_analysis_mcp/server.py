@@ -26,6 +26,8 @@ from . import ffmpeg_utils, gemini_media, prompts, schemas
 
 mcp = FastMCP("media-analysis-mcp")
 DEFAULT_ANALYSIS_MODEL = "gemini-3.7-flash"
+DEFAULT_MULTI_IMAGE_THINKING_LEVEL = "high"
+DEFAULT_MULTI_IMAGE_MAX_OUTPUT_TOKENS = 65_536
 DEFAULT_VIDEO_ANALYSIS_MODEL = DEFAULT_ANALYSIS_MODEL
 DEFAULT_VIDEO_THINKING_LEVEL = "high"
 DEFAULT_VIDEO_MAX_OUTPUT_TOKENS = 65_536
@@ -103,6 +105,84 @@ def _normalize_question(question: str) -> str:
     if not isinstance(question, str) or not question.strip():
         raise RuntimeError("INVALID_INPUT: question is required.")
     return question.strip()
+
+
+def _normalize_image_inputs(
+    image_paths: list[str], labels: Optional[list[str]]
+) -> tuple[list[str], list[str]]:
+    """Validate and resolve an ordered, equal-role multi-image request."""
+    if not isinstance(image_paths, list) or not 2 <= len(image_paths) <= 10:
+        count = (
+            len(image_paths)
+            if isinstance(image_paths, list)
+            else type(image_paths).__name__
+        )
+        raise RuntimeError(
+            f"INVALID_INPUT: analyze_images needs 2 to 10 image paths (got {count})"
+        )
+
+    resolved_paths: list[str] = []
+    for path_str in image_paths:
+        if not isinstance(path_str, str) or not path_str.strip():
+            raise RuntimeError(
+                "INVALID_INPUT: every analyze_images path must be a non-empty string"
+            )
+        path = Path(path_str).expanduser()
+        if not path.is_file():
+            raise RuntimeError(f"IMAGE_NOT_FOUND: {path_str}")
+        resolved_paths.append(str(path.resolve()))
+
+    if len(set(resolved_paths)) != len(resolved_paths):
+        raise RuntimeError("INVALID_INPUT: analyze_images image paths must be distinct")
+
+    if labels is None:
+        normalized_labels = [Path(path).name for path in resolved_paths]
+    else:
+        if not isinstance(labels, list) or len(labels) != len(resolved_paths):
+            count = len(labels) if isinstance(labels, list) else type(labels).__name__
+            raise RuntimeError(
+                "INVALID_INPUT: labels must contain exactly one entry per image "
+                f"(got {count} labels for {len(resolved_paths)} images)"
+            )
+        normalized_labels = []
+        for label in labels:
+            if not isinstance(label, str) or not label.strip():
+                raise RuntimeError(
+                    "INVALID_INPUT: every analyze_images label must be a non-empty string"
+                )
+            normalized_labels.append(label.strip())
+
+    return resolved_paths, normalized_labels
+
+
+def _build_multi_image_contents(
+    *,
+    image_paths: list[str],
+    image_labels: list[str],
+    prompt: Optional[str],
+    intent: Optional[str],
+    context: Optional[str],
+    image_module: Any,
+    question: str,
+) -> list[Any]:
+    """Build one ordered, explicitly labeled, equal-role image request."""
+    parts: list[Any] = [
+        prompts.context_block(
+            prompt=prompt, intent=intent, context=context, question=question
+        ),
+    ]
+    for idx, (path, label) in enumerate(
+        zip(image_paths, image_labels, strict=True), start=1
+    ):
+        parts.append(f"IMAGE {idx} — {label}:")
+        parts.append(gemini_media.load_image(path, image_module=image_module))
+
+    parts.append(
+        "Answer the Question above by referring to evidence with its exact "
+        "IMAGE number and label. Treat every image as an equal-role source. "
+        "Do not choose a winner unless the Question explicitly asks you to."
+    )
+    return parts
 
 
 @mcp.tool()
@@ -398,6 +478,99 @@ def analyze_image(
             style_refs=style_refs,
             question=question_text,
         ),
+    }
+
+
+@mcp.tool()
+def analyze_images(
+    image_paths: list[str],
+    question: str,
+    labels: Optional[list[str]] = None,
+    prompt: Optional[str] = None,
+    intent: Optional[str] = None,
+    context: Optional[str] = None,
+    model: str = DEFAULT_ANALYSIS_MODEL,
+    temperature: Optional[float] = None,
+    system_prompt: Optional[str] = None,
+    thinking_level: Optional[
+        Literal["minimal", "low", "medium", "high"]
+    ] = DEFAULT_MULTI_IMAGE_THINKING_LEVEL,
+    max_output_tokens: Optional[int] = DEFAULT_MULTI_IMAGE_MAX_OUTPUT_TOKENS,
+) -> dict[str, Any]:
+    """Ask one open-ended question across two to ten equal-role images.
+
+    Every image is inserted into one Gemini request behind an explicit
+    ``IMAGE N — label`` marker. Unlike ``compare_images``, this tool has no
+    response schema, candidate roles, criteria, forced ranking, or winner.
+    It is intended for collection reading, pattern discovery, mode and
+    counterexample analysis, and other questions that depend on jointly
+    seeing several images.
+
+    Args:
+        image_paths: Ordered list of two to ten distinct local image paths.
+        question: Cross-image question for Gemini to answer in prose.
+        labels: Optional ordered labels. Defaults to each file's basename.
+        prompt: Optional shared generation prompt or source note.
+        intent: Optional shared creative brief.
+        context: Optional per-call notes.
+        model: Gemini model id. Default ``gemini-3.7-flash``.
+        temperature: Optional sampling override.
+        system_prompt: Override the neutral multi-image instruction.
+        thinking_level: Gemini reasoning depth. Defaults to ``high``. Pass
+            ``None`` to use the model/API default.
+        max_output_tokens: Maximum output budget. Defaults to 65,536. Pass
+            ``None`` to use the model/API default.
+
+    Returns:
+        Resolved ordered paths and labels, reasoning controls, the original
+        question, a free-form answer, and an echo of shared context.
+
+    Raises:
+        RuntimeError: ``INVALID_INPUT`` for list/label errors,
+        ``IMAGE_NOT_FOUND`` for a missing source, ``API_KEY_MISSING``,
+        ``NO_RESPONSE``, or other provider errors.
+    """
+    question_text = _normalize_question(question)
+    resolved_paths, normalized_labels = _normalize_image_inputs(image_paths, labels)
+
+    image_module = gemini_media.require_pillow()
+    client, gtypes = gemini_media.init_client()
+    system_instruction = system_prompt or prompts.analyze_images_system_prompt()
+    contents = _build_multi_image_contents(
+        image_paths=resolved_paths,
+        image_labels=normalized_labels,
+        prompt=prompt,
+        intent=intent,
+        context=context,
+        image_module=image_module,
+        question=question_text,
+    )
+    answer = gemini_media.call_unstructured(
+        client=client,
+        gtypes=gtypes,
+        model=model,
+        system_instruction=system_instruction,
+        contents=contents,
+        temperature=temperature,
+        thinking_level=thinking_level,
+        max_output_tokens=max_output_tokens,
+    )
+
+    return {
+        "model": model,
+        "image_paths": resolved_paths,
+        "image_labels": normalized_labels,
+        "thinking_level": thinking_level,
+        "max_output_tokens": max_output_tokens,
+        "question": question_text,
+        "answer": answer,
+        "context_used": {
+            "prompt": prompt,
+            "intent": intent,
+            "context": context,
+            "question": question_text,
+            "image_labels": normalized_labels,
+        },
     }
 
 

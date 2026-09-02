@@ -123,7 +123,8 @@ uv run media-analysis-mcp
 
 Analysis tools:
 
-- `analyze_image` / `analyze_video` — **preferred default.** Free-form Q&A: pass any question, get a prose answer. Same multimodal plumbing, no response schema. Video analysis defaults to `thinking_level=high` and `max_output_tokens=65536`; both are explicit per-call overrides and may be set to `null` to restore model/API defaults.
+- `analyze_image` / `analyze_video` — **preferred single-source default.** Free-form Q&A: pass any question, get a prose answer. Same multimodal plumbing, no response schema. Video analysis defaults to `thinking_level=high` and `max_output_tokens=65536`; both are explicit per-call overrides and may be set to `null` to restore model/API defaults.
+- `analyze_images` — one open-ended question across 2–10 ordered, explicitly labeled, equal-role images. It has no candidate hierarchy, fixed criteria, response schema, or forced winner. Defaults to `thinking_level=high` and `max_output_tokens=65536`, with `null` restoring model/API defaults.
 - `analyze_audio` — free-form audio Q&A and detailed transcription. Preserves the Files API's detected `audio/*` MIME type, including M4A/AAC files that must not be routed through `analyze_video`. Defaults to `gemini-3.7-flash`.
 - `analyze_videos` — one grounded free-form question across 2–10 ordered,
   explicitly labeled videos. Useful for edit comparisons, continuity checks,
