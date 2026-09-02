@@ -23,8 +23,8 @@ Current defaults:
 - CLI video default model: `veo-3.1-fast-generate-preview`
 - CLI/MCP image default model: `gemini-3-pro-image`
 - MCP video default model: `bytedance/seedance-2.5`
-- Media-analysis image default model: `gemini-3.7-flash`
-- Media-analysis video default model: `gemini-3.7-flash`
+- Media-analysis image default model: `gemini-3.8-flash`
+- Media-analysis video default model: `gemini-3.8-flash`
 
 Model strings remain configurable so a teammate with access to a newer preview
 or provider model can swap it in without editing the code.
@@ -170,7 +170,7 @@ Analysis tools:
 
 - `analyze_image` / `analyze_video` — **preferred single-source default.** Free-form Q&A: pass any question, get a prose answer. Same multimodal plumbing, no response schema. Video analysis defaults to `thinking_level=high` and `max_output_tokens=65536`; both are explicit per-call overrides and may be set to `null` to restore model/API defaults.
 - `analyze_images` — one open-ended question across 2–10 ordered, explicitly labeled, equal-role images. It has no candidate hierarchy, fixed criteria, response schema, or forced winner. Defaults to `thinking_level=high` and `max_output_tokens=65536`, with `null` restoring model/API defaults.
-- `analyze_audio` — free-form audio Q&A and detailed transcription. Preserves the Files API's detected `audio/*` MIME type, including M4A/AAC files that must not be routed through `analyze_video`. Defaults to `gemini-3.7-flash`.
+- `analyze_audio` — free-form audio Q&A and detailed transcription. Preserves the Files API's detected `audio/*` MIME type, including M4A/AAC files that must not be routed through `analyze_video`. Defaults to `gemini-3.8-flash`.
 - `analyze_videos` — one grounded free-form question across 2–10 ordered,
   explicitly labeled videos. Useful for edit comparisons, continuity checks,
   and candidate ranking without first concatenating a review reel. It shares
@@ -182,7 +182,7 @@ Analysis tools:
 - `extract_video_frames` — ffmpeg-based frame extraction at custom timestamps; useful for feeding stills back into image tools.
 
 All Gemini image-, video-, and audio-analysis tools default to
-`gemini-3.7-flash`. All retain an opt-in `temperature`
+`gemini-3.8-flash`. All retain an opt-in `temperature`
 (omitted unless you pass one — each model uses its own tuned default).
 
 #### When to use which: `analyze_*` vs `describe_*`
@@ -528,6 +528,12 @@ This project follows [semantic versioning](https://semver.org/). The current
 version is set in [`pyproject.toml`](pyproject.toml).
 
 ### Unreleased
+
+- **Gemini 3.8 Flash for media analysis** — image, video, multi-image,
+  multi-video, and audio analysis tools now share the `gemini-3.8-flash`
+  default. The live Gemini Models API and synthetic image, audio, and video
+  calls (video at `thinking_level=high`) were verified before changing the
+  default. `gemini-3.7-flash` remains available as an explicit `model`.
 
 - **Consistent generation timestamps** — video results preserve the original
   request time as `created_at` and record local result finalization separately
