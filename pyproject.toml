@@ -5,7 +5,7 @@ description = "Batch Gemini media generation CLI plus companion MCP servers (gem
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "google-genai>=1.47.0",
+    "google-genai>=2.0.0",
     "pillow>=10.4.0",
     "PyYAML>=6.0.2",
     "python-dotenv>=1.0.1",

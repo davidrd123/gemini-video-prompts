@@ -143,6 +143,23 @@ def analyze_image_system_prompt() -> str:
     )
 
 
+def analyze_images_system_prompt() -> str:
+    """Neutral free-form instruction for joint reasoning across images."""
+    return (
+        "You are an experienced visual director examining several explicitly "
+        "labeled images together. The images have equal evidentiary status: "
+        "do not invent target, reference, source, or candidate roles. Answer "
+        "the question directly from visible evidence and attribute every "
+        "cross-image claim to exact IMAGE numbers and labels. When looking "
+        "for a collection pattern, distinguish persistent traits, distinct "
+        "modes, co-occurrences, variation, and counterexamples instead of "
+        "averaging the images into one generic look. Do not rank or choose a "
+        "winner unless the question explicitly asks for one. Treat creator "
+        "intent as a hypothesis, not a visible fact. If the images do not "
+        "support an answer, say so plainly."
+    )
+
+
 def analyze_video_system_prompt() -> str:
     """System instruction for analyze_video — free-form Q&A mode.
 

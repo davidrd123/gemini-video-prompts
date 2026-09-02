@@ -21,7 +21,7 @@ except Exception:  # pragma: no cover
 
 
 DEFAULT_VIDEO_MODEL = "veo-3.1-fast-generate-preview"
-DEFAULT_IMAGE_MODEL = "gemini-3-pro-image-preview"
+DEFAULT_IMAGE_MODEL = "gemini-3-pro-image"
 BLOCK_SEPARATOR = re.compile(r"(?m)^\s*---+\s*$")
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -714,11 +714,26 @@ def generate_image_job(
     for path in image_inputs:
         contents.append(load_input_image(path, image_module=image_module))
 
+    job_config = dict(job.get("config") or {})
+    api_mode = str(job_config.pop("api", "generate_content"))
+    thinking_level = job_config.pop("thinking_level", None)
+    store = bool(job_config.pop("store", False))
+    previous_interaction_id = job_config.pop("previous_interaction_id", None)
+    if api_mode not in {"generate_content", "interactions"}:
+        raise RuntimeError("INVALID_INPUT: config.api must be generate_content or interactions")
+    if previous_interaction_id and api_mode != "interactions":
+        raise RuntimeError("INVALID_INPUT: previous_interaction_id requires config.api=interactions")
+    if thinking_level not in {None, "minimal", "low", "medium", "high"}:
+        raise RuntimeError("INVALID_INPUT: thinking_level must be minimal, low, medium, or high")
+
     cfg_kwargs: dict[str, Any] = {
+        **job_config,
         "response_modalities": ["IMAGE", "TEXT"],
         "system_instruction": job.get("system_prompt") or None,
         "temperature": job.get("temperature"),
     }
+    if thinking_level is not None:
+        cfg_kwargs["thinking_config"] = {"thinking_level": thinking_level}
     image_cfg = build_image_config(
         aspect_ratio=job.get("aspect_ratio"),
         image_size=job.get("image_size"),
@@ -736,15 +751,57 @@ def generate_image_job(
 
     generated_images: list[Any] = []
     texts: list[str] = []
+    interaction_ids: list[str] = []
     attempts = 0
     started_at = now_iso()
     while len(generated_images) < requested_outputs and attempts < requested_outputs:
         attempts += 1
-        response = client.models.generate_content(
-            model=job["model"],
-            contents=contents,
-            config=config,
-        )
+        if api_mode == "interactions":
+            interaction_input: Any = job["prompt"]
+            if image_inputs:
+                interaction_input = [{"type": "text", "text": job["prompt"]}]
+                for path in image_inputs:
+                    mime_type, _ = mimetypes.guess_type(str(path))
+                    interaction_input.append({
+                        "type": "image",
+                        "data": base64.b64encode(path.read_bytes()).decode("ascii"),
+                        "mime_type": mime_type or "image/png",
+                    })
+            generation_config: dict[str, Any] = {}
+            if job.get("temperature") is not None:
+                generation_config["temperature"] = job["temperature"]
+            if thinking_level is not None:
+                generation_config["thinking_level"] = thinking_level
+            interaction_kwargs: dict[str, Any] = {
+                "model": job["model"],
+                "input": interaction_input,
+                "store": store,
+                "response_format": {
+                    "type": "image",
+                    **({"aspect_ratio": job["aspect_ratio"]} if job.get("aspect_ratio") else {}),
+                    **({"image_size": job["image_size"]} if job.get("image_size") else {}),
+                },
+            }
+            if generation_config:
+                interaction_kwargs["generation_config"] = generation_config
+            if job.get("system_prompt"):
+                interaction_kwargs["system_instruction"] = job["system_prompt"]
+            if previous_interaction_id:
+                interaction_kwargs["previous_interaction_id"] = previous_interaction_id
+            interaction = client.interactions.create(**interaction_kwargs)
+            if getattr(interaction, "id", None):
+                interaction_ids.append(str(interaction.id))
+            output_image = getattr(interaction, "output_image", None)
+            image_data = getattr(output_image, "data", None)
+            if image_data:
+                raw = base64.b64decode(image_data) if isinstance(image_data, str) else bytes(image_data)
+                generated_images.append(image_module.open(io.BytesIO(raw)).convert("RGB"))
+            output_text = getattr(interaction, "output_text", None)
+            if output_text:
+                texts.append(str(output_text))
+            continue
+
+        response = client.models.generate_content(model=job["model"], contents=contents, config=config)
         response_candidates = getattr(response, "candidates", None) or []
         for response_candidate in response_candidates:
             content = getattr(response_candidate, "content", None) or response_candidate
@@ -794,10 +851,15 @@ def generate_image_job(
             "image": job.get("image"),
             "images": job.get("images"),
             "config": job.get("config") or {},
+            "api": api_mode,
+            "thinking_level": thinking_level,
+            "store": store,
+            "previous_interaction_id": previous_interaction_id,
         },
         "input_count": len(image_inputs),
         "inputs": [str(path) for path in image_inputs],
         "attempts": attempts,
+        "interaction_ids": interaction_ids,
         "text": "\n".join(texts).strip() or None,
         "job_dir": str(job_dir),
         "outputs": outputs,

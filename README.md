@@ -21,7 +21,7 @@ The repo now has two generation paths:
 Current defaults:
 
 - CLI video default model: `veo-3.1-fast-generate-preview`
-- CLI/MCP image default model: `gemini-3-pro-image-preview`
+- CLI/MCP image default model: `gemini-3-pro-image`
 - MCP video default model: `bytedance/seedance-2.5`
 - Media-analysis image default model: `gemini-3.7-flash`
 - Media-analysis video default model: `gemini-3.7-flash`
@@ -99,7 +99,9 @@ uv run gemini-prompts-mcp
 
 Generation tools:
 
-- `generate_image` — blocking Gemini image generation.
+- `generate_image` — blocking Gemini image generation. It can use the
+  one-shot `generate_content` path or a stored Interactions path for
+  multi-turn image editing.
 - `generate_video` — blocking Replicate-Seedance generation, preserved for simple one-shot calls.
 - `start_video_job` — starts a Replicate-Seedance prediction and returns `{job_id, prediction_id, status, job_dir}` immediately.
 - `get_video_job` — reads `<out_root>/jobs/<job_id>/status.json`, optionally polls Replicate, and downloads outputs when the prediction succeeds.
@@ -108,6 +110,49 @@ Generation tools:
   normalized seed provenance for one async job without polling.
 - `list_generations` — searches current and historical async records by prompt,
   title, model, status, or job ID.
+
+### Stateful image generation
+
+Use `api="interactions"` and `store=true` when a generated image may become the
+parent of a later edit. The result includes `interaction_ids`; pass the relevant
+ID back as `previous_interaction_id` with a bounded next instruction. The
+provider then carries the prior image and thought signatures without requiring
+you to resend the earlier turn.
+
+For a fresh Nano Banana 2 root:
+
+```json
+{
+  "prompt": "One low rear source; keep camera-facing planes near-black.",
+  "model": "gemini-3.1-flash-image",
+  "api": "interactions",
+  "thinking_level": "high",
+  "temperature": 1.0,
+  "store": true,
+  "aspect_ratio": "21:9",
+  "image_size": "1K"
+}
+```
+
+For one continuation from the returned interaction ID:
+
+```json
+{
+  "prompt": "Add only a thin horizontal optical streak. Preserve the lighting, geometry, camera, and shadows.",
+  "model": "gemini-3.1-flash-image",
+  "api": "interactions",
+  "thinking_level": "high",
+  "temperature": 1.0,
+  "store": true,
+  "previous_interaction_id": "<INTERACTION_ID>"
+}
+```
+
+`thinking_level` accepts `minimal`, `low`, `medium`, or `high` when the selected
+model supports that level. Gemini 3 models are tuned for a temperature of
+`1.0`; omitting `temperature` uses the model default. Setting `store=true`
+persists provider-side interaction state, so use it only when that retention is
+appropriate for the material.
 
 If you pass a custom `out_root` to `start_video_job`, pass the same `out_root`
 to `get_video_job`, `cancel_video_job`, `get_generation`, and
@@ -123,7 +168,8 @@ uv run media-analysis-mcp
 
 Analysis tools:
 
-- `analyze_image` / `analyze_video` — **preferred default.** Free-form Q&A: pass any question, get a prose answer. Same multimodal plumbing, no response schema. Video analysis defaults to `thinking_level=high` and `max_output_tokens=65536`; both are explicit per-call overrides and may be set to `null` to restore model/API defaults.
+- `analyze_image` / `analyze_video` — **preferred single-source default.** Free-form Q&A: pass any question, get a prose answer. Same multimodal plumbing, no response schema. Video analysis defaults to `thinking_level=high` and `max_output_tokens=65536`; both are explicit per-call overrides and may be set to `null` to restore model/API defaults.
+- `analyze_images` — one open-ended question across 2–10 ordered, explicitly labeled, equal-role images. It has no candidate hierarchy, fixed criteria, response schema, or forced winner. Defaults to `thinking_level=high` and `max_output_tokens=65536`, with `null` restoring model/API defaults.
 - `analyze_audio` — free-form audio Q&A and detailed transcription. Preserves the Files API's detected `audio/*` MIME type, including M4A/AAC files that must not be routed through `analyze_video`. Defaults to `gemini-3.7-flash`.
 - `analyze_videos` — one grounded free-form question across 2–10 ordered,
   explicitly labeled videos. Useful for edit comparisons, continuity checks,
@@ -212,6 +258,7 @@ add the tools to a `permissions.allow` list. For a global setup put it in
       "mcp__gemini-prompts__get_generation",
       "mcp__gemini-prompts__list_generations",
       "mcp__media-analysis__analyze_image",
+      "mcp__media-analysis__analyze_images",
       "mcp__media-analysis__analyze_video",
       "mcp__media-analysis__analyze_audio",
       "mcp__media-analysis__analyze_videos",
@@ -253,7 +300,7 @@ Current defaults in the standalone CLI:
 
 - mode: `video`
 - video model: `veo-3.1-fast-generate-preview`
-- image model: `gemini-3-pro-image-preview`
+- image model: `gemini-3-pro-image`
 - image temperature: omitted by default; `--temperature` is an opt-in override
 - image num outputs: `1`
 - video poll interval: `10` seconds
@@ -367,7 +414,7 @@ flags override them. Mode column shows where each key applies.
 | `title` | both | Auto-derived from prompt if omitted |
 | `prompt` | YAML only | Text format uses the block body for the prompt |
 | `prompt_file` | both | Loads the prompt from a separate file (overrides `prompt`/body) |
-| `model` | both | Model code, e.g. `gemini-3-pro-image-preview` |
+| `model` | both | Model code, e.g. `gemini-3-pro-image` or `gemini-3.1-flash-image` |
 | `aspect_ratio` | both | e.g. `"16:9"`, `"9:16"` |
 | `duration_seconds` | video | |
 | `enhance_prompt` | video | bool |
@@ -381,7 +428,7 @@ flags override them. Mode column shows where each key applies.
 | `reference_images` | video | Explicit Veo 3.1 reference image entries with `reference_type` in the standalone CLI |
 | `video` | video | Input video path |
 | `video_uri` | video | Input video URI |
-| `config` | both | Extra fields forwarded into the underlying generation config (`config.<key>: value` in text headers, nested mapping in YAML) |
+| `config` | both | Extra fields forwarded into the underlying generation config (`config.<key>: value` in text headers, nested mapping in YAML). For image jobs, reserved keys are `api`, `thinking_level`, `store`, and `previous_interaction_id`. |
 
 CLI flags override YAML and text-file settings.
 

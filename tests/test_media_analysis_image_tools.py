@@ -10,6 +10,7 @@ from media_analysis_mcp import schemas, server
     "tool",
     [
         server.analyze_image,
+        server.analyze_images,
         server.describe_image,
         server.score_image,
         server.compare_images,
