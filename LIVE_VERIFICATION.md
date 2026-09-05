@@ -53,7 +53,22 @@ multiple references, and multi-output requests were not live-tested.
 
 What we learned by running the tools end-to-end during the v1 build. Everything here is grounded in actual API calls against real artifacts; nothing is hypothetical. The code itself, design doc, and git log capture *what we built*; this captures *how it behaves in practice* and *where the rough edges are*.
 
-Updated 2026-08-13. v1 closed out (Step 8); v2 #1 (live Seedance fire) added the same day; v2 #5 (local async API) implemented + mock-verified + live-smoked; v2 #2 (`.mcp.example.json` + `riff-mcp-doctor`) wired the surface for agent use; project `.mcp.json` wired in this repo and exercised end-to-end against vault-grounded inputs from the sibling GML 2026 Closing Film vault — surfaced the **input-sensitivity finding** that `intent` text is the load-bearing variable for `score_image` (same image / same prompt, ~65pt swing on `creative_brief_fidelity` based purely on intent composition). Also live-fired the full mutation→describe→score riff loop end-to-end through MCP for the first time. On 2026-08-13, the media-analysis default moved to `gemini-3.7-flash` after registry and multimodal live verification. **What is NOT yet validated**: whether the scores Gemini returns track production judgment. That requires a human-in-the-loop calibration pass (see v2 outstanding #13). See "Vault-grounded input-sensitivity characterization" section.
+Updated 2026-09-02. v1 closed out (Step 8); v2 #1 (live Seedance fire) added the same day; v2 #5 (local async API) implemented + mock-verified + live-smoked; v2 #2 (`.mcp.example.json` + `riff-mcp-doctor`) wired the surface for agent use; project `.mcp.json` wired in this repo and exercised end-to-end against vault-grounded inputs from the sibling GML 2026 Closing Film vault — surfaced the **input-sensitivity finding** that `intent` text is the load-bearing variable for `score_image` (same image / same prompt, ~65pt swing on `creative_brief_fidelity` based purely on intent composition). Also live-fired the full mutation→describe→score riff loop end-to-end through MCP for the first time. On 2026-08-13, the media-analysis default moved to `gemini-3.7-flash` after registry and multimodal live verification; on 2026-09-02 it moved to `gemini-3.8-flash` the same way. **What is NOT yet validated**: whether the scores Gemini returns track production judgment. That requires a human-in-the-loop calibration pass (see v2 outstanding #13). See "Vault-grounded input-sensitivity characterization" section.
+
+## Gemini 3.8 Flash default upgrade — 2026-09-02
+
+- The live Gemini Models API returned `models/gemini-3.8-flash` with
+  `generateContent`, `countTokens`, `createCachedContent`, and
+  `batchGenerateContent` actions. The registry reports `version: 3.0`.
+- A synthetic 256×128 PNG (red field, white "RIFF 38" text) passed through the
+  real `analyze_image` path; Gemini returned the color and text correctly.
+- A two-second 440 Hz synthetic WAV passed through `analyze_audio`; upload,
+  analysis, and Files API deletion all returned HTTP 200.
+- A two-second synthetic `testsrc` MP4 at 12 fps passed through
+  `analyze_video` with the default `thinking_level=high`; Gemini described the
+  moving test pattern, and the uploaded Files API resource was deleted.
+- These checks ran on the locked `google-genai` 2.20.0 environment; no SDK or
+  request-shape change was required.
 
 ## Gemini 3.7 Flash default upgrade — 2026-08-13
 

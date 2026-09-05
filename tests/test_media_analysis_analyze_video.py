@@ -21,7 +21,7 @@ class _FakeClient:
 )
 def test_all_video_analysis_tools_default_to_gemini_3_7_flash(tool) -> None:
     default = inspect.signature(tool).parameters["model"].default
-    assert server.DEFAULT_VIDEO_ANALYSIS_MODEL == "gemini-3.7-flash"
+    assert server.DEFAULT_VIDEO_ANALYSIS_MODEL == "gemini-3.8-flash"
     assert default == server.DEFAULT_VIDEO_ANALYSIS_MODEL
 
 
