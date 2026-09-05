@@ -9,6 +9,15 @@
 design history; older signatures, dependency snippets, file line numbers,
 and prospective steps below are not current installation instructions.
 
+## Current fal video extension — 2026-09-04
+
+`start_fal_video_job` adds opt-in H3 Max image/reference-to-video queue submission.
+`get_video_job` and `cancel_video_job` dispatch using the saved provider; existing
+Seedance submission signatures remain intact. fal uses `FAL_KEY`, an explicit
+billing acknowledgement, and durable pre-submission records. See the
+[fal guide](docs/FAL_H3_MAX.md) for the current contract and verification
+limits. The batch CLI is not extended to fal in this change.
+
 ## Current OpenAI image extension — 2026-09-04
 
 `generate_image` and the batch CLI now accept explicit `provider="openai"`.
