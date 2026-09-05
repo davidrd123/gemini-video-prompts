@@ -1,5 +1,36 @@
 # Live Verification Notes
 
+## fal H3 Max integration — 2026-09-04
+
+The image-to-video and reference-to-video input contracts were checked against
+fal's public OpenAPI schemas. Mocked HTTP tests verify 480p/768p, reference
+validation and submitted-byte hashes, billing refusal before credential/file
+access, durable uncertain submissions, queue polling, original/expanded prompt
+records, collection recovery without resubmission, and cancellation semantics.
+Two explicitly approved reference-to-video requests subsequently succeeded live:
+one with balanced expansion and one with quality expansion. Both requested
+15 seconds at 768p with the same nine image references; the quality request
+reused the balanced result's returned seed. Both collected MP4s measured
+1344×768, 24 fps, and 15.104 seconds, with audio. The adapter preserved output
+bytes/hashes, both original and expanded prompts, returned seeds, and timings.
+
+Provider-reported inference times were 28.55s (balanced) and 28.43s (quality).
+These measure backend inference, not queue, expansion, or download latency.
+This pair establishes live submission/polling/collection for reference-to-video;
+it does not establish that either expansion mode is generally better.
+Image-to-video, 480p, and video/audio reference inputs remain offline-tested only.
+Actual invoice costs were not verified. Private reference assets, prompts,
+provider IDs, and generated media are excluded from the repository changes.
+See [the fal guide](docs/FAL_H3_MAX.md).
+
+A clean source-archive installation (`uv sync --offline --locked --extra openai`)
+launched the actual MCP template with blank credentials. It exposed eight
+generation tools; both fal guide JSON previews succeeded, and both unapproved
+execution attempts were refused before creating outputs. The full offline
+suite passes 206 tests, including 34 fal tests. Ruff and generated-schema checks
+pass. Existing locked dependency versions are unchanged.
+
+
 ## Documentation walkthrough — 2026-09-04 (no provider calls)
 
 A fresh source distribution was extracted outside the working checkout,

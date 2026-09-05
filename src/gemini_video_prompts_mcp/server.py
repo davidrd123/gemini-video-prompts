@@ -39,7 +39,7 @@ from gemini_video_prompts.cli import (
     write_json,
 )
 
-from . import seedance
+from . import fal_video, seedance
 from .seedance import SEEDANCE_MODEL_DEFAULT
 
 try:
@@ -1121,15 +1121,200 @@ def start_video_job(
 
 
 @mcp.tool()
+def start_fal_video_job(
+    prompt: str,
+    model: str = fal_video.I2V,
+    image: Optional[str] = None,
+    last_frame_image: Optional[str] = None,
+    reference_images: Optional[list[str]] = None,
+    reference_videos: Optional[list[str]] = None,
+    reference_audios: Optional[list[str]] = None,
+    duration: int = 5,
+    resolution: str = "768p",
+    aspect_ratio: Optional[str] = None,
+    seed: Optional[int] = None,
+    prompt_expansion_mode: str = "balanced",
+    enable_safety_checker: bool = True,
+    title: Optional[str] = None,
+    out_root: Optional[str] = None,
+    dry_run: bool = False,
+    allow_api_billing: bool = False,
+) -> dict[str, Any]:
+    """Submit one H3 Max video to fal's durable queue, then return a local job_id.
+
+    Uses separately billed FAL_KEY API access, not a subscription. A key or
+    auto-approved tool is not spending authorization. Before executing, obtain
+    user approval for endpoint, clip count, duration, resolution, and references;
+    then set allow_api_billing=true. Honor existing approval within that scope.
+    Reference-to-video may bill input references in addition to output seconds.
+    Confirmation is caller acknowledgement, not an independently enforced cap.
+
+    Args:
+        prompt: 1..50000 characters. Reference tokens are Image 1, Video 1,
+            Audio 1, etc., numbered independently in each ordered list.
+        model: minimax/h3-max/image-to-video (default) or
+            minimax/h3-max/reference-to-video. No automatic provider fallback.
+        image: Local first frame, required for image-to-video. Output inherits
+            its aspect ratio. Remote URLs are not accepted by this adapter.
+        last_frame_image: Optional local last frame for image-to-video.
+        reference_images: Reference-to-video only; up to 9 local images.
+        reference_videos: Up to 3 local video clips, each 2..15s, total <=15s.
+        reference_audios: Up to 3 local audio clips, each 2..15s, total <=15s.
+            Reference-to-video needs an image or video anchor; max 12 files
+            across modalities. ffprobe is required for video/audio validation.
+        duration: Integer 5..15 seconds. One video per submission, with native
+            model audio; no separate generate_audio switch on these endpoints.
+        resolution: 480p or 768p (default); uppercase accepted too.
+        aspect_ratio: Reference-to-video only; adaptive (default), 21:9,
+            16:9, 4:3, 1:1, 3:4, or 9:16.
+        seed: Optional integer; provider-returned seed is recorded separately.
+        prompt_expansion_mode: balanced (default, about 1s rewrite) or quality
+            (up to about 30s rewrite). This is prompt preprocessing effort.
+            Both submitted prompt and returned expanded_prompt are preserved.
+        enable_safety_checker: fal's safety checker; default true.
+        title: Human-readable label. Each real submission gets a unique folder.
+        out_root: Absolute output root recommended; default repository out/.
+        dry_run: Validate parameter shape and preview references without reading
+            credentials, reading media, writing files, or making requests.
+        allow_api_billing: Explicit approval acknowledgement, default false.
+
+    Use get_video_job(job_id, out_root) to poll and collect the video;
+    poll=false and get_generation are local reads. list_generations finds jobs.
+    cancel_video_job requests cancellation, which may not stop running work.
+    References are sent as inline data URIs after approval (100 MiB total local
+    limit). Job records keep hashes and paths, not those large encoded inputs.
+    No automatic HTTP retries or resubmissions. fal can retry work within its
+    own queue. If submission is uncertain, inspect the local record and fal
+    dashboard before authorizing another billable attempt.
+    """
+    params, refs = fal_video.build_request(
+        prompt=prompt, model=model, image=image, last_frame_image=last_frame_image,
+        reference_images=reference_images, reference_videos=reference_videos,
+        reference_audios=reference_audios, duration=duration, resolution=resolution,
+        aspect_ratio=aspect_ratio, seed=seed, prompt_expansion_mode=prompt_expansion_mode,
+        enable_safety_checker=enable_safety_checker,
+    )
+    root = resolve_output_root(out_root or "out")
+    label = title or prompt_stem(prompt)
+    plan = dict(status="planned", provider="fal", model=model, prompt=params["prompt"],
+                resolved_params=params, references=refs, title=label,
+                mode=model.rsplit("/", 1)[1].replace("-", "_"),
+                billing_confirmation_required=True, billing_notice=fal_video.BILLING_NOTICE,
+                out_root=str(root))
+    if dry_run:
+        return plan
+    if allow_api_billing is not True:
+        raise RuntimeError("API_BILLING_CONFIRMATION_REQUIRED: " + fal_video.BILLING_NOTICE)
+    fal_video.api_key()
+    payload, refs = fal_video.prepare_inputs(params, refs)
+    job_id = uuid.uuid4().hex[:12]
+    job_dir = ensure_dir(root / dt.date.today().isoformat() / slugify(model) /
+                         f"{slugify(label) or 'video'}_{job_id}")
+    ensure_dir(_jobs_root(root) / job_id)
+    created = now_iso()
+    status = {**plan, "status": "submitting", "job_id": job_id, "generation_id": job_id,
+              "created_at": created, "job_dir": str(job_dir), "references": refs,
+              "seed_provenance": {"requested_seed": seed, "returned_seed": None},
+              "outputs_downloaded": False, "allow_api_billing": True}
+    write_json(_job_request_path(root, job_id), {**status, "tool": "start_fal_video_job"})
+    _write_status(root, job_id, status)
+    try:
+        receipt = fal_video.queue_request("POST", "https://queue.fal.run/" + model, payload=payload)
+        # Save the receipt immediately, even if later validation fails.
+        status["provider_receipt"] = receipt
+        status["request_id"] = receipt.get("request_id")
+        _write_status(root, job_id, status)
+        if not receipt.get("request_id") or not all(receipt.get(k) for k in
+                                                   ("status_url", "response_url", "cancel_url")):
+            raise RuntimeError("FAL_INVALID_RESPONSE: incomplete submission receipt")
+        status["status"] = "queued"
+    except RuntimeError as exc:
+        status["status"] = "submission_unknown"
+        status["error"] = str(exc)
+        _write_status(root, job_id, status)
+        _append_generation_index_safely(root, status, event="created")
+        raise RuntimeError(f"FAL_SUBMISSION_UNCERTAIN: job_id={job_id}; "
+                           "inspect get_generation and fal dashboard; do not resubmit automatically") from None
+    _append_generation_index_safely(root, status, event="created")
+    _write_status(root, job_id, status)
+    return status
+
+
+def _poll_fal_video_job(root: Path, job_id: str, *, cancel: bool = False) -> dict[str, Any]:
+    with _job_finalize_lock(root, job_id):
+        status = _read_json(_job_status_path(root, job_id))
+        if status["status"] in {"succeeded", "failed", "canceled"}:
+            return status
+        receipt = status.get("provider_receipt") or {}
+        if not status.get("request_id") or not receipt.get("status_url"):
+            raise RuntimeError("FAL_SUBMISSION_UNCERTAIN: no pollable receipt; inspect fal dashboard")
+        if cancel:
+            response = fal_video.queue_request("PUT", receipt["cancel_url"])
+            status["cancellation_response"] = response
+            status["cancellation_requested_at"] = now_iso()
+            # Acceptance is not proof of cancellation or a refund.
+            _write_status(root, job_id, status)
+            return status
+        provider_status = fal_video.queue_request("GET", receipt["status_url"])
+        status["provider_status"] = provider_status
+        state = provider_status.get("status")
+        if state == "COMPLETED" and provider_status.get("error"):
+            status.update(status="failed", error="FAL_GENERATION_FAILED: see provider dashboard",
+                          completed_at=now_iso())
+        elif state == "COMPLETED":
+            status["status"] = "collecting"
+            _write_status(root, job_id, status)
+            try:
+                result = status.get("provider_result")
+                if result is None:
+                    result = fal_video.queue_request("GET", receipt["response_url"])
+                    status["provider_result"] = result
+                    _write_status(root, job_id, status)
+                video = result.get("video") or {}
+                if not isinstance(video, dict) or not video.get("url"):
+                    raise RuntimeError("FAL_INVALID_RESPONSE: completed result has no video URL")
+                output = fal_video.download_video(video["url"], Path(status["job_dir"]) / "video_01.mp4")
+                status["seed_provenance"]["returned_seed"] = result.get("seed")
+                record = {k: status.get(k) for k in ("job_id", "generation_id", "request_id", "provider",
+                          "model", "mode", "title", "prompt", "resolved_params", "references",
+                          "created_at", "job_dir", "seed_provenance")}
+                record.update(status="ok", collected_at=now_iso(), outputs=[output],
+                              expanded_prompt=result.get("expanded_prompt"),
+                              timings=result.get("timings"), provider_result=result)
+                write_json(Path(status["job_dir"]) / "job.json", record)
+                status.update(status="succeeded", result=record, outputs_downloaded=True,
+                              completed_at=now_iso())
+                status.pop("error", None)
+            except RuntimeError as exc:
+                status["error"] = str(exc)
+                _write_status(root, job_id, status)
+                raise
+        elif state in ("IN_QUEUE", "IN_PROGRESS"):
+            status["status"] = "queued" if state == "IN_QUEUE" else "processing"
+        else:
+            raise RuntimeError("FAL_INVALID_RESPONSE: unrecognized queue status")
+        _write_status(root, job_id, status)
+        if status["status"] in {"succeeded", "failed", "canceled"}:
+            _append_generation_index_safely(root, status, event="completed")
+        return status
+
+
+@mcp.tool()
 def get_video_job(
     job_id: str,
     out_root: Optional[str] = None,
     poll: bool = True,
 ) -> dict[str, Any]:
-    """Return local status for an async video job, optionally polling Replicate."""
+    """Return an async video job; optionally poll its saved provider (Replicate or fal).
+
+    fal completion downloads the video and records the expanded prompt. Polling
+    never resubmits inference. With poll=false this only reads the local record.
+    """
     out_root_path, status = _load_async_video_status(job_id, out_root)
     if not poll:
         return status
+    if status.get("provider") == "fal":
+        return _poll_fal_video_job(out_root_path, job_id)
 
     if status.get("status") in _TERMINAL_PREDICTION_STATUSES:
         if status.get("status") == "succeeded" and not status.get("result"):
@@ -1162,8 +1347,14 @@ def cancel_video_job(
     job_id: str,
     out_root: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Cancel a running async video job and persist the updated status."""
+    """Request cancellation from the saved provider and persist its response.
+
+    fal acceptance does not guarantee running work stops or charges are avoided.
+    Continue polling the existing job; never resubmit it to check cancellation.
+    """
     out_root_path, status = _load_async_video_status(job_id, out_root)
+    if status.get("provider") == "fal":
+        return _poll_fal_video_job(out_root_path, job_id, cancel=True)
     if status.get("status") in _TERMINAL_PREDICTION_STATUSES:
         return status
 

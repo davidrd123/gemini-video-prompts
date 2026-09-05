@@ -1148,6 +1148,7 @@ version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "google-genai" },
+    { name = "httpx" },
     { name = "mcp", extra = ["cli"] },
     { name = "pillow" },
     { name = "pydantic" },
@@ -1170,6 +1171,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "google-genai", specifier = ">=2.0.0" },
+    { name = "httpx", specifier = ">=0.28.1" },
     { name = "mcp", extras = ["cli"], specifier = ">=1.0.0" },
     { name = "openai", marker = "extra == 'openai'", specifier = ">=2.0.0" },
     { name = "pillow", specifier = ">=10.4.0" },

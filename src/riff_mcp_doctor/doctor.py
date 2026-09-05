@@ -267,6 +267,23 @@ def run_openai_checks(*, network: bool = False) -> list[CheckResult]:
     return results
 
 
+def run_fal_checks(*, network: bool = False) -> list[CheckResult]:
+    """Check fal readiness locally; never submit an inference request."""
+    load_dotenv_if_available()
+    users = [f"{GENERATION_SERVER}.start_fal_video_job"]
+    results = [check_env("FAL_KEY", users)]
+    results.extend(check_python_pkg(name, users) for name in ("httpx", "PIL", "mcp", "dotenv"))
+    probe = check_binary("ffprobe", users)
+    if probe.status == "fail":
+        probe.status = "warn"
+        probe.detail = "not on PATH; needed for video/audio references and output media info"
+    results.append(probe)
+    if network:
+        results.append(CheckResult("fal", "network", "skipped",
+                                   "No fal auth probe implemented; key presence does not verify access or quota.", users))
+    return results
+
+
 _STATUS_LABEL = {
     "ok": "OK",
     "warn": "WARN",
@@ -342,16 +359,16 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         help="Emit results as JSON instead of plain text.",
     )
     parser.add_argument(
-        "--provider", choices=("legacy", "openai"), default="legacy",
-        help="legacy checks Gemini/Replicate (default); openai checks only optional OpenAI images.",
+        "--provider", choices=("legacy", "openai", "fal"), default="legacy",
+        help="legacy checks Gemini/Replicate (default); openai or fal checks that provider independently.",
     )
     return parser.parse_args(argv)
 
 
 def main(argv: Optional[list[str]] = None) -> int:
     args = parse_args(argv)
-    results = (run_openai_checks(network=args.network) if args.provider == "openai"
-               else run_all_checks(network=args.network))
+    runners = {"legacy": run_all_checks, "openai": run_openai_checks, "fal": run_fal_checks}
+    results = runners[args.provider](network=args.network)
     output = format_json(results) if args.json else format_text(results)
     sys.stdout.write(output)
     failures = [r for r in results if r.status == "fail"]

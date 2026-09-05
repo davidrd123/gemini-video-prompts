@@ -18,11 +18,12 @@ the tool; see its description for the effective provider-specific default.
 
 ## gemini-prompts-mcp
 
-7 tools.
+8 tools.
 
 - [generate_image](#generate_image)
 - [generate_video](#generate_video)
 - [start_video_job](#start_video_job)
+- [start_fal_video_job](#start_fal_video_job)
 - [get_video_job](#get_video_job)
 - [cancel_video_job](#cancel_video_job)
 - [get_generation](#get_generation)
@@ -749,9 +750,229 @@ future HTTP receiver workflows; this stdio MCP still relies on polling.
 }
 ```
 
+### start_fal_video_job
+
+Submit one H3 Max video to fal's durable queue, then return a local job_id.
+
+Uses separately billed FAL_KEY API access, not a subscription. A key or
+auto-approved tool is not spending authorization. Before executing, obtain
+user approval for endpoint, clip count, duration, resolution, and references;
+then set allow_api_billing=true. Honor existing approval within that scope.
+Reference-to-video may bill input references in addition to output seconds.
+Confirmation is caller acknowledgement, not an independently enforced cap.
+
+Args:
+    prompt: 1..50000 characters. Reference tokens are Image 1, Video 1,
+        Audio 1, etc., numbered independently in each ordered list.
+    model: minimax/h3-max/image-to-video (default) or
+        minimax/h3-max/reference-to-video. No automatic provider fallback.
+    image: Local first frame, required for image-to-video. Output inherits
+        its aspect ratio. Remote URLs are not accepted by this adapter.
+    last_frame_image: Optional local last frame for image-to-video.
+    reference_images: Reference-to-video only; up to 9 local images.
+    reference_videos: Up to 3 local video clips, each 2..15s, total <=15s.
+    reference_audios: Up to 3 local audio clips, each 2..15s, total <=15s.
+        Reference-to-video needs an image or video anchor; max 12 files
+        across modalities. ffprobe is required for video/audio validation.
+    duration: Integer 5..15 seconds. One video per submission, with native
+        model audio; no separate generate_audio switch on these endpoints.
+    resolution: 480p or 768p (default); uppercase accepted too.
+    aspect_ratio: Reference-to-video only; adaptive (default), 21:9,
+        16:9, 4:3, 1:1, 3:4, or 9:16.
+    seed: Optional integer; provider-returned seed is recorded separately.
+    prompt_expansion_mode: balanced (default, about 1s rewrite) or quality
+        (up to about 30s rewrite). This is prompt preprocessing effort.
+        Both submitted prompt and returned expanded_prompt are preserved.
+    enable_safety_checker: fal's safety checker; default true.
+    title: Human-readable label. Each real submission gets a unique folder.
+    out_root: Absolute output root recommended; default repository out/.
+    dry_run: Validate parameter shape and preview references without reading
+        credentials, reading media, writing files, or making requests.
+    allow_api_billing: Explicit approval acknowledgement, default false.
+
+Use get_video_job(job_id, out_root) to poll and collect the video;
+poll=false and get_generation are local reads. list_generations finds jobs.
+cancel_video_job requests cancellation, which may not stop running work.
+References are sent as inline data URIs after approval (100 MiB total local
+limit). Job records keep hashes and paths, not those large encoded inputs.
+No automatic HTTP retries or resubmissions. fal can retry work within its
+own queue. If submission is uncertain, inspect the local record and fal
+dashboard before authorizing another billable attempt.
+
+```json
+{
+  "properties": {
+    "prompt": {
+      "title": "Prompt",
+      "type": "string"
+    },
+    "model": {
+      "default": "minimax/h3-max/image-to-video",
+      "title": "Model",
+      "type": "string"
+    },
+    "image": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Image"
+    },
+    "last_frame_image": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Last Frame Image"
+    },
+    "reference_images": {
+      "anyOf": [
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Reference Images"
+    },
+    "reference_videos": {
+      "anyOf": [
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Reference Videos"
+    },
+    "reference_audios": {
+      "anyOf": [
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Reference Audios"
+    },
+    "duration": {
+      "default": 5,
+      "title": "Duration",
+      "type": "integer"
+    },
+    "resolution": {
+      "default": "768p",
+      "title": "Resolution",
+      "type": "string"
+    },
+    "aspect_ratio": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Aspect Ratio"
+    },
+    "seed": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Seed"
+    },
+    "prompt_expansion_mode": {
+      "default": "balanced",
+      "title": "Prompt Expansion Mode",
+      "type": "string"
+    },
+    "enable_safety_checker": {
+      "default": true,
+      "title": "Enable Safety Checker",
+      "type": "boolean"
+    },
+    "title": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Title"
+    },
+    "out_root": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Out Root"
+    },
+    "dry_run": {
+      "default": false,
+      "title": "Dry Run",
+      "type": "boolean"
+    },
+    "allow_api_billing": {
+      "default": false,
+      "title": "Allow Api Billing",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "prompt"
+  ],
+  "title": "start_fal_video_jobArguments",
+  "type": "object"
+}
+```
+
 ### get_video_job
 
-Return local status for an async video job, optionally polling Replicate.
+Return an async video job; optionally poll its saved provider (Replicate or fal).
+
+fal completion downloads the video and records the expanded prompt. Polling
+never resubmits inference. With poll=false this only reads the local record.
 
 ```json
 {
@@ -788,7 +1009,10 @@ Return local status for an async video job, optionally polling Replicate.
 
 ### cancel_video_job
 
-Cancel a running async video job and persist the updated status.
+Request cancellation from the saved provider and persist its response.
+
+fal acceptance does not guarantee running work stops or charges are avoided.
+Continue polling the existing job; never resubmit it to check cancellation.
 
 ```json
 {

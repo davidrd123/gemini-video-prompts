@@ -15,7 +15,8 @@ tool description/schema is sufficient when the MCP server is already connected.
 | Generate/edit an image with the host's built-in ImageGen | Use the host's own tool, outside riff | Host account and limits; riff cannot control this route |
 | Generate/edit with GPT-Image-2 through riff | `generate_image`, explicit `provider="openai"` | `OPENAI_API_KEY`, separate API billing and explicit confirmation |
 | Generate/edit with Gemini | `generate_image` with the default provider | `GEMINI_API_KEY`, Gemini API billing |
-| Generate video through MCP | `generate_video`, or `start_video_job` followed by `get_video_job` | `REPLICATE_API_TOKEN`, Replicate billing |
+| Generate H3 Max video through fal | `start_fal_video_job`, then `get_video_job` | `FAL_KEY`, fal API billing and explicit confirmation; [guide](FAL_H3_MAX.md) |
+| Generate Seedance video through MCP | `generate_video`, or `start_video_job` followed by `get_video_job` | `REPLICATE_API_TOKEN`, Replicate billing |
 | Generate video through the batch CLI | `gemini-video-prompts --mode video` | `GEMINI_API_KEY`, Veo API billing |
 | Ask about an image, video, or audio file | `analyze_image`, `analyze_video`, `analyze_audio` | `GEMINI_API_KEY`, Gemini API billing |
 | Ask across multiple images/videos | `analyze_images`, `analyze_videos` | Gemini; ordered paths and optional labels |
@@ -26,7 +27,7 @@ tool description/schema is sufficient when the MCP server is already connected.
 Every provider-backed riff generation/analysis call uses API access. Putting an
 OpenAI key in this checkout does not change the host agent's subscription
 sign-in. Installing an SDK or possessing a key is not permission to spend.
-The explicit billing gate described below applies to OpenAI images; the legacy
+The explicit billing gate applies to OpenAI images and fal video submissions; the legacy
 Gemini and Replicate tools do not implement that argument. Follow the user's
 authorization for those tools as well.
 
@@ -49,7 +50,7 @@ alone is insufficient: unreleased changes still use version `0.2.0`. Obtain the
 intended revision from the maintainer; do not assume these changes are on a
 remote default branch. Preserve local changes when updating.
 
-Omit `--extra openai` if only Gemini/Replicate is needed. Keep it on OpenAI-enabled
+Omit `--extra openai` if only Gemini/Replicate/fal is needed. Keep it on OpenAI-enabled
 launch commands. `uv sync` is an exact environment sync and can remove unused
 extras; stop running servers before changing their shared environment, then
 restart them. For verification that must not touch the existing environment,
@@ -108,6 +109,10 @@ Use the actual discovered tool name; the client may prefix it with the alias
 
 Use absolute input/output paths in MCP calls. With `--directory`, a relative
 reference path resolves against riff-mcp, not the user's other project.
+
+For fal H3 Max, follow [the fal guide](FAL_H3_MAX.md): `FAL_KEY`, the dedicated
+`start_fal_video_job` tool, 480p/768p, and scoped API approval. Its reference
+tokens and parameters differ from Seedance; do not translate them implicitly.
 
 ## Preview, approve, and generate one OpenAI image
 

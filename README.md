@@ -3,12 +3,13 @@
 **New agent or teammate:** start with the [agent quickstart](docs/AGENT_QUICKSTART.md).
 It includes the setup, billing boundary, first image, edit, and error recovery.
 The [generated tool reference](docs/TOOL_REFERENCE.md) lists the actual MCP
-schemas. No private vault or external prompting skill is required to run riff.
+schemas. For fal video, use the [H3 Max guide](docs/FAL_H3_MAX.md).
+No private vault or external prompting skill is required to run riff.
 
 Toolkit for the *riff* workflow — iteratively generate, analyze, and refine AI-generated media. Three pieces in one repo:
 
 - `gemini-video-prompts` — batch CLI for Gemini/OpenAI images and Gemini video generation, including dry-runs.
-- `gemini-prompts-mcp` — wraps generation as MCP tools (`generate_image` via Gemini or opt-in OpenAI, `generate_video` via Replicate-Seedance).
+- `gemini-prompts-mcp` — wraps generation as MCP tools (`generate_image` via Gemini or opt-in OpenAI, `generate_video` via Replicate-Seedance, and `start_fal_video_job` via fal H3 Max).
 - `media-analysis-mcp` — Gemini multimodal analysis (`analyze_*`, `describe_*`, `score_*`, `compare_images`, `extract_visual_tokens`) + ffmpeg-based `extract_video_frames`.
 
 The name comes from the `generation-review-loop` skill's vocabulary for iterative prompt work — *the riff loop*: generate → review → extract → iterate. See [`MCP_DESIGN.md`](MCP_DESIGN.md) for the architecture.
@@ -23,13 +24,15 @@ The repo now has two generation paths:
 - **MCP generation server** — `generate_image` shares the CLI's image workers;
   `generate_video` uses Seedance 2.5 through Replicate (2.0 remains selectable
   via the `model` arg — it is the only one with 1080p/4k output).
+  `start_fal_video_job` separately submits H3 Max image/reference-to-video to fal.
 
 Current defaults:
 
 - CLI video default model: `veo-3.1-fast-generate-preview`
 - CLI/MCP image default model: `gemini-3-pro-image`
 - Opt-in OpenAI image model (`provider="openai"`): `gpt-image-2`
-- MCP video default model: `bytedance/seedance-2.5`
+- MCP Seedance video default model: `bytedance/seedance-2.5`
+- Opt-in fal video tool: `start_fal_video_job`, H3 Max at 768p (480p selectable)
 - Media-analysis image default model: `gemini-3.8-flash`
 - Media-analysis video default model: `gemini-3.8-flash`
 
@@ -141,12 +144,30 @@ Generation tools:
   multi-turn image editing.
 - `generate_video` — blocking Replicate-Seedance generation, preserved for simple one-shot calls.
 - `start_video_job` — starts a Replicate-Seedance prediction and returns `{job_id, prediction_id, status, job_dir}` immediately.
-- `get_video_job` — reads `<out_root>/jobs/<job_id>/status.json`, optionally polls Replicate, and downloads outputs when the prediction succeeds.
-- `cancel_video_job` — cancels a running provider prediction and updates local status.
+- `start_fal_video_job` — submits an explicitly approved H3 Max image/reference-to-video request to fal, or previews it with `dry_run=true`.
+- `get_video_job` — reads the local record, optionally polls its saved provider (Replicate or fal), and collects completed outputs.
+- `cancel_video_job` — requests cancellation from the saved provider and records the response; fal acceptance does not guarantee running work stops.
 - `get_generation` — returns the durable request, status, result, paths, and
   normalized seed provenance for one async job without polling.
 - `list_generations` — searches current and historical async video records by prompt,
   title, model, status, or job ID.
+
+### fal H3 Max image-to-video and reference-to-video
+
+Use `start_fal_video_job` with `minimax/h3-max/image-to-video` or
+`minimax/h3-max/reference-to-video`, 5–15 seconds, and `resolution="480p"` or
+`"768p"` (default). Configure `FAL_KEY` in the untracked `.env`; no additional
+SDK extra is needed. This uses separately billed fal API access. Preview with
+`dry_run=true`, obtain scoped approval, then set `allow_api_billing=true`.
+Reference inputs can affect charges as well as output duration.
+
+Use `get_video_job` to poll the returned job ID and collect the output;
+`get_generation` and `list_generations` provide local provenance lookup. The
+original and expanded prompts are preserved. `prompt_expansion_mode` defaults
+to `balanced`; `quality` is an explicit, slower prompt-rewriting option.
+See the [complete fal guide](docs/FAL_H3_MAX.md) for working examples, reference
+limits, prompt expansion research, current pricing links, and timeout recovery.
+Existing Seedance tools and CLI video routing retain their behavior.
 
 ### OpenAI GPT-Image-2 generation and editing
 
@@ -405,6 +426,7 @@ Before wiring the MCP servers (or after a "tool not working" report), run:
 uv run riff-mcp-doctor          # env vars, Python packages, ffmpeg/ffprobe
 uv run riff-mcp-doctor --network  # plus a cheap Gemini + Replicate auth check
 uv run riff-mcp-doctor --json     # machine-readable output for scripts
+uv run riff-mcp-doctor --provider fal  # local fal key/import readiness; no inference
 uv run --extra openai riff-mcp-doctor --provider openai
 uv run --extra openai riff-mcp-doctor --provider openai --network
 ```
@@ -692,6 +714,10 @@ This project follows [semantic versioning](https://semver.org/). The current
 version is set in [`pyproject.toml`](pyproject.toml).
 
 ### Unreleased
+
+- **fal H3 Max video** — explicit image/reference-to-video queue submission,
+  480p/768p, billing confirmation, ordered references, durable recovery, and
+  original/expanded prompt records. See [the fal guide](docs/FAL_H3_MAX.md).
 
 - **Opt-in OpenAI GPT-Image-2 images** — direct API generation and reference
   edits through MCP, CLI, and YAML/text batches. Optional SDK extra, independent
