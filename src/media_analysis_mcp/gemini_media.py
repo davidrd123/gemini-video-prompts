@@ -300,3 +300,58 @@ def call_unstructured(
     raise RuntimeError(
         "NO_RESPONSE: Gemini returned no usable text response."
     )
+
+
+def validate_video_processing(processing: str, fps: Optional[float]) -> None:
+    if processing not in {"static", "agentic"}:
+        raise RuntimeError("INVALID_INPUT: processing must be static or agentic")
+    if processing == "agentic" and fps is not None:
+        raise RuntimeError("INVALID_INPUT: omit fps with agentic processing")
+
+
+def call_agentic_video(
+    *, client: Any, model: str, system_instruction: str, contents: list[Any],
+    temperature: Optional[float], thinking_level: Optional[str],
+    max_output_tokens: Optional[int],
+) -> dict[str, Any]:
+    """Translate the ordered video/reference context to Interactions; retain evidence."""
+    import base64
+    import io
+
+    inputs = []
+    for part in contents:
+        if isinstance(part, str):
+            inputs.append({"type": "text", "text": part})
+        elif getattr(part, "file_data", None) is not None:
+            inputs.append({"type": "video", "uri": part.file_data.file_uri,
+                           "mime_type": part.file_data.mime_type, "processing": "agentic"})
+        else:
+            # Builders supply loaded RGB Pillow images for reference slots.
+            buffer = io.BytesIO()
+            part.save(buffer, format="PNG")
+            inputs.append({"type": "image", "mime_type": "image/png",
+                           "data": base64.b64encode(buffer.getvalue()).decode("ascii")})
+    config = {k: v for k, v in {
+        "temperature": temperature, "thinking_level": thinking_level,
+        "max_output_tokens": max_output_tokens,
+    }.items() if v is not None}
+    response = client.interactions.with_raw_response.create(
+        model=model, input=inputs, system_instruction=system_instruction,
+        generation_config=config, store=False,
+    )
+    # Keep wire steps: SDK typed parsing can discard new processing step types.
+    payload = response.json()
+    steps = payload.get("steps", [])
+    answer = "\n".join(
+        content["text"] for step in steps if step.get("type") == "model_output"
+        for content in step.get("content", [])
+        if content.get("type") == "text" and content.get("text")
+    ).strip()
+    if not answer:
+        raise RuntimeError("NO_RESPONSE: Gemini returned no usable text response.")
+    trace = [s for s in steps if s.get("type") in {"processing_call", "processing_result"}]
+    calls = {s.get("id") for s in trace if s.get("type") == "processing_call"} - {None}
+    verified = any(s.get("type") == "processing_result" and s.get("call_id") in calls
+                   for s in trace)
+    return {"answer": answer, "processing_trace": trace,
+            "agentic_processing_verified": verified, "interaction": payload}

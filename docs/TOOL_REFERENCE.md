@@ -2258,7 +2258,13 @@ Args:
     identity_refs: Optional character/asset reference paths.
     style_refs: Optional style anchor paths.
     fps: Sampling rate Gemini uses when reading the video. Default
-        None lets Gemini pick (typically 1 fps).
+        None uses static sampling at the API default (1 fps).
+    processing: ``static`` preserves the existing request path. ``agentic``
+        uses Interactions for adaptive inspection; omit fps. Supported by
+        Gemini 3.8/3.7/3.6 Flash and 3.5 Flash Lite. Returns processing_trace,
+        agentic_processing_verified (matched call/result evidence), and full
+        interaction metadata. Save the returned result to retain the trace.
+        This is a synchronous, single-turn API call; no automatic fallback.
     model: Gemini model id. Default ``gemini-3.8-flash``.
     temperature: Optional sampling override; omitted by default.
     system_prompt: Override the default analyze-mode instruction.
@@ -2438,6 +2444,15 @@ Raises:
       ],
       "default": 65536,
       "title": "Max Output Tokens"
+    },
+    "processing": {
+      "default": "static",
+      "enum": [
+        "static",
+        "agentic"
+      ],
+      "title": "Processing",
+      "type": "string"
     }
   },
   "required": [
@@ -2470,7 +2485,13 @@ Args:
     identity_refs: Optional shared character/asset image references.
     style_refs: Optional shared style image references.
     fps: Sampling rate applied independently to every video. Default None
-        lets Gemini choose; valid explicit range is (0, 24].
+        uses static sampling at 1 fps; explicit range is (0, 24].
+    processing: ``static`` preserves the existing request path. ``agentic``
+        uses Interactions for adaptive inspection; omit fps. Supported by
+        Gemini 3.8/3.7/3.6 Flash and 3.5 Flash Lite. Returns processing_trace,
+        agentic_processing_verified (matched call/result evidence), and full
+        interaction metadata. Save the returned result to retain the trace.
+        This is a synchronous, single-turn API call; no automatic fallback.
     model: Gemini model id. Default ``gemini-3.8-flash``.
     temperature: Optional sampling override.
     system_prompt: Override the default analyze-mode instruction.
@@ -2672,6 +2693,15 @@ Raises:
       ],
       "default": 65536,
       "title": "Max Output Tokens"
+    },
+    "processing": {
+      "default": "static",
+      "enum": [
+        "static",
+        "agentic"
+      ],
+      "title": "Processing",
+      "type": "string"
     }
   },
   "required": [

@@ -241,3 +241,39 @@ the broader usage guide. [MCP_DESIGN.md](../MCP_DESIGN.md) retains historical
 design stages, not copy/paste setup instructions. [LIVE_VERIFICATION.md](../LIVE_VERIFICATION.md)
 records what was actually tested; success at one size/quality does not verify
 all combinations or grant authorization for another paid test.
+
+## Adaptive video inspection
+
+Use `analyze_video` or `analyze_videos` with `processing="agentic"` and omit
+`fps`. For example (Gemini API billing applies):
+
+```json
+{
+  "video_path": "/absolute/path/to/clip.mp4",
+  "question": "Locate the final shot transition and state timing uncertainty.",
+  "model": "gemini-3.8-flash",
+  "processing": "agentic",
+  "max_output_tokens": 12000
+}
+```
+
+`processing="static"` is the default and preserves the existing request path.
+Omitting FPS alone does not enable adaptive inspection. Agentic mode uses
+Interactions; the same mode applies to every video in a multi-video request.
+Riff rejects explicit FPS with agentic mode to avoid conflicting controls.
+
+Save the complete tool result as JSON in the task's output directory. It includes
+`processing_trace`, `agentic_processing_verified`, and the raw `interaction`
+response (including usage when supplied). Verification requires a matching
+processing call/result pair; an answer alone is insufficient. The SDK's typed
+parser can omit these steps, so Riff retains raw response JSON. This evidence
+confirms navigation, not exact-frame accuracy or creative acceptance.
+
+These are synchronous single-turn calls with `store=false`; streaming,
+background execution, and follow-up interaction IDs are not exposed here.
+Uploaded videos are cleaned up after success or failure. Riff does not silently
+fall back to static mode. Restart the media-analysis MCP server after updating
+and verify that its tool schema exposes `processing`.
+
+See [Google's processing-mode documentation](https://ai.google.dev/gemini-api/docs/video-understanding#agentic-video-understanding)
+for supported models and provider limitations.

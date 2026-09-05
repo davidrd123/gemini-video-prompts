@@ -1114,6 +1114,7 @@ def analyze_video(
         Literal["minimal", "low", "medium", "high"]
     ] = DEFAULT_VIDEO_THINKING_LEVEL,
     max_output_tokens: Optional[int] = DEFAULT_VIDEO_MAX_OUTPUT_TOKENS,
+    processing: Literal["static", "agentic"] = "static",
 ) -> dict[str, Any]:
     """Free-form video analysis. Same Files API plumbing as describe_video,
     but no response schema — Gemini answers ``question`` in prose.
@@ -1133,7 +1134,13 @@ def analyze_video(
         identity_refs: Optional character/asset reference paths.
         style_refs: Optional style anchor paths.
         fps: Sampling rate Gemini uses when reading the video. Default
-            None lets Gemini pick (typically 1 fps).
+            None uses static sampling at the API default (1 fps).
+        processing: ``static`` preserves the existing request path. ``agentic``
+            uses Interactions for adaptive inspection; omit fps. Supported by
+            Gemini 3.8/3.7/3.6 Flash and 3.5 Flash Lite. Returns processing_trace,
+            agentic_processing_verified (matched call/result evidence), and full
+            interaction metadata. Save the returned result to retain the trace.
+            This is a synchronous, single-turn API call; no automatic fallback.
         model: Gemini model id. Default ``gemini-3.8-flash``.
         temperature: Optional sampling override; omitted by default.
         system_prompt: Override the default analyze-mode instruction.
@@ -1153,6 +1160,8 @@ def analyze_video(
     if not Path(video_path).expanduser().is_file():
         raise RuntimeError(f"VIDEO_NOT_FOUND: {video_path}")
     _validate_fps(fps)
+    gemini_media.validate_video_processing(processing, fps)
+    processing_result: dict[str, Any] = {}
 
     image_module = gemini_media.require_pillow()
     client, gtypes = gemini_media.init_client()
@@ -1178,9 +1187,8 @@ def analyze_video(
             question=question_text,
         )
 
-        answer = gemini_media.call_unstructured(
+        call_kwargs = dict(
             client=client,
-            gtypes=gtypes,
             model=model,
             system_instruction=system_instruction,
             contents=contents,
@@ -1188,6 +1196,11 @@ def analyze_video(
             thinking_level=thinking_level,
             max_output_tokens=max_output_tokens,
         )
+        if processing == "agentic":
+            processing_result = gemini_media.call_agentic_video(**call_kwargs)
+            answer = processing_result["answer"]
+        else:
+            answer = gemini_media.call_unstructured(gtypes=gtypes, **call_kwargs)
     finally:
         gemini_media.cleanup_uploaded(client, uploaded)
 
@@ -1195,6 +1208,8 @@ def analyze_video(
         "model": model,
         "video_path": str(Path(video_path).expanduser().resolve()),
         "fps": fps,
+        "processing": processing,
+        **processing_result,
         "thinking_level": thinking_level,
         "max_output_tokens": max_output_tokens,
         "question": question_text,
@@ -1231,6 +1246,7 @@ def analyze_videos(
         Literal["minimal", "low", "medium", "high"]
     ] = DEFAULT_VIDEO_THINKING_LEVEL,
     max_output_tokens: Optional[int] = DEFAULT_VIDEO_MAX_OUTPUT_TOKENS,
+    processing: Literal["static", "agentic"] = "static",
 ) -> dict[str, Any]:
     """Ask one grounded question across two to ten ordered videos.
 
@@ -1251,7 +1267,13 @@ def analyze_videos(
         identity_refs: Optional shared character/asset image references.
         style_refs: Optional shared style image references.
         fps: Sampling rate applied independently to every video. Default None
-            lets Gemini choose; valid explicit range is (0, 24].
+            uses static sampling at 1 fps; explicit range is (0, 24].
+        processing: ``static`` preserves the existing request path. ``agentic``
+            uses Interactions for adaptive inspection; omit fps. Supported by
+            Gemini 3.8/3.7/3.6 Flash and 3.5 Flash Lite. Returns processing_trace,
+            agentic_processing_verified (matched call/result evidence), and full
+            interaction metadata. Save the returned result to retain the trace.
+            This is a synchronous, single-turn API call; no automatic fallback.
         model: Gemini model id. Default ``gemini-3.8-flash``.
         temperature: Optional sampling override.
         system_prompt: Override the default analyze-mode instruction.
@@ -1274,6 +1296,8 @@ def analyze_videos(
     question_text = _normalize_question(question)
     resolved_paths, normalized_labels = _normalize_video_inputs(video_paths, labels)
     _validate_fps(fps)
+    gemini_media.validate_video_processing(processing, fps)
+    processing_result: dict[str, Any] = {}
 
     image_module = gemini_media.require_pillow()
     client, gtypes = gemini_media.init_client()
@@ -1305,9 +1329,8 @@ def analyze_videos(
             question=question_text,
         )
 
-        answer = gemini_media.call_unstructured(
+        call_kwargs = dict(
             client=client,
-            gtypes=gtypes,
             model=model,
             system_instruction=system_instruction,
             contents=contents,
@@ -1315,6 +1338,11 @@ def analyze_videos(
             thinking_level=thinking_level,
             max_output_tokens=max_output_tokens,
         )
+        if processing == "agentic":
+            processing_result = gemini_media.call_agentic_video(**call_kwargs)
+            answer = processing_result["answer"]
+        else:
+            answer = gemini_media.call_unstructured(gtypes=gtypes, **call_kwargs)
     finally:
         for uploaded in uploaded_files:
             gemini_media.cleanup_uploaded(client, uploaded)
@@ -1335,6 +1363,8 @@ def analyze_videos(
         "video_paths": resolved_paths,
         "video_labels": normalized_labels,
         "fps": fps,
+        "processing": processing,
+        **processing_result,
         "thinking_level": thinking_level,
         "max_output_tokens": max_output_tokens,
         "question": question_text,

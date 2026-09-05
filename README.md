@@ -778,3 +778,11 @@ version is set in [`pyproject.toml`](pyproject.toml).
 - `media-analysis-mcp` — `describe_*`, `score_*`, `compare_images`,
   `extract_visual_tokens`, and ffmpeg-based `extract_video_frames`.
 - `riff-mcp-doctor` environment/dependency diagnostics.
+
+### Agentic video analysis
+
+`analyze_video` and `analyze_videos` accept `processing="agentic"` for adaptive
+video inspection through Gemini Interactions. Omit `fps`; static remains the
+default. Results preserve the raw processing trace and report whether a linked
+call/result pair was observed. See the [agent quickstart](docs/AGENT_QUICKSTART.md#adaptive-video-inspection)
+for an example, result handling, and restart instructions.
