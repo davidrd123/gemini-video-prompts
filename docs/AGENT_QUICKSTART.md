@@ -1,0 +1,238 @@
+# Run riff-mcp from a fresh agent session
+
+Read the repository's [AGENTS.md](../AGENTS.md) first. This guide requires no
+earlier conversation, private vault, or separately installed prompting skill.
+Commands below run from the root of a checkout containing this feature.
+
+If using a source archive rather than a Git checkout, skip `git status`.
+Read only the relevant sections of the generated tool reference; the live
+tool description/schema is sufficient when the MCP server is already connected.
+
+## Choose the correct tool and billing account
+
+| User's task | Tool or command | Access |
+|---|---|---|
+| Generate/edit an image with the host's built-in ImageGen | Use the host's own tool, outside riff | Host account and limits; riff cannot control this route |
+| Generate/edit with GPT-Image-2 through riff | `generate_image`, explicit `provider="openai"` | `OPENAI_API_KEY`, separate API billing and explicit confirmation |
+| Generate/edit with Gemini | `generate_image` with the default provider | `GEMINI_API_KEY`, Gemini API billing |
+| Generate video through MCP | `generate_video`, or `start_video_job` followed by `get_video_job` | `REPLICATE_API_TOKEN`, Replicate billing |
+| Generate video through the batch CLI | `gemini-video-prompts --mode video` | `GEMINI_API_KEY`, Veo API billing |
+| Ask about an image, video, or audio file | `analyze_image`, `analyze_video`, `analyze_audio` | `GEMINI_API_KEY`, Gemini API billing |
+| Ask across multiple images/videos | `analyze_images`, `analyze_videos` | Gemini; ordered paths and optional labels |
+| Structured observation, scoring, comparison | `describe_*`, `score_*`, `compare_images`, `extract_visual_tokens` | Gemini; use only when that output shape fits the task |
+| Extract video frames | `extract_video_frames` | Local ffmpeg operation |
+| Read an existing async video record | `get_generation`, `list_generations`, or `get_video_job` with `poll=false` | Local reads |
+
+Every provider-backed riff generation/analysis call uses API access. Putting an
+OpenAI key in this checkout does not change the host agent's subscription
+sign-in. Installing an SDK or possessing a key is not permission to spend.
+The explicit billing gate described below applies to OpenAI images; the legacy
+Gemini and Replicate tools do not implement that argument. Follow the user's
+authorization for those tools as well.
+
+## Install and check the checkout
+
+Use Python 3.10+ and an installed `uv` executable. If either is unavailable,
+use the [pip installation instructions](../README.md#install) or have the user
+install the prerequisite. Do not replace an existing environment as a workaround.
+
+```bash
+pwd
+git status --short --branch
+uv sync --locked --extra openai
+uv run --extra openai gemini-video-prompts --help
+```
+
+The help must list `--provider`, `--size`, and `--allow-api-billing`. If it does
+not, this is an older checkout or the wrong executable. The package version
+alone is insufficient: unreleased changes still use version `0.2.0`. Obtain the
+intended revision from the maintainer; do not assume these changes are on a
+remote default branch. Preserve local changes when updating.
+
+Omit `--extra openai` if only Gemini/Replicate is needed. Keep it on OpenAI-enabled
+launch commands. `uv sync` is an exact environment sync and can remove unused
+extras; stop running servers before changing their shared environment, then
+restart them. For verification that must not touch the existing environment,
+set `UV_PROJECT_ENVIRONMENT` to a separate absolute directory when running uv.
+
+## Configure credentials without exposing them
+
+If `.env` does not exist, create it from `.env.example` without overwriting an
+existing file. Ask the user to edit it locally. For OpenAI images, the only key
+needed is:
+
+```dotenv
+OPENAI_API_KEY=<the user's API key>
+```
+
+This is a placeholder, not a usable key. Remove the placeholder and supply a
+real value locally. Never read the entire `.env` into a chat, log, or tool
+output. Leave unused credentials commented out. An inherited environment value
+takes precedence over `.env`; an empty client `env` entry can shadow a valid key.
+
+A restricted OpenAI key needs access to `POST /v1/images/generations` and
+`POST /v1/images/edits`. The optional doctor network check also needs model-read
+access. Edits send reference images directly; a Files API upload is not needed.
+Key permissions and available API billing/quota are separate requirements.
+
+```bash
+uv run --extra openai riff-mcp-doctor --provider openai
+```
+
+Expected: all checks pass. This only checks local configuration/imports; a
+placeholder can pass the presence check. If useful, add `--network` for a
+non-generating model lookup. A successful lookup does not prove image-generation
+or billing permission. The default doctor checks Gemini/Replicate and video
+binaries, so use `--provider openai` for an OpenAI-only setup.
+
+## Connect the MCP server
+
+Merge [`.mcp.example.json`](../.mcp.example.json) into the client's MCP
+configuration and replace `REPO_PATH` with this checkout's absolute path.
+Do not overwrite the user's other server entries or permission settings.
+For an OpenAI-only workflow, register only `gemini-prompts`; `media-analysis`
+is an optional second server and uses Gemini.
+
+The generation command is:
+
+```bash
+uv --directory /ABSOLUTE/PATH/TO/riff-mcp run --extra openai gemini-prompts-mcp
+```
+
+This is a long-running stdio server, not a one-shot generation command. Let the
+MCP client own the process. Restart/reconnect it after installation, code, or
+configuration changes. In the client's tool list, verify `generate_image` has
+`provider`, `size`, `quality`, and `allow_api_billing` (default false).
+Use the actual discovered tool name; the client may prefix it with the alias
+`gemini-prompts`. Do not confuse it with a host tool named ImageGen.
+
+Use absolute input/output paths in MCP calls. With `--directory`, a relative
+reference path resolves against riff-mcp, not the user's other project.
+
+## Preview, approve, and generate one OpenAI image
+
+Call the MCP tool `generate_image` with these arguments:
+
+```json
+{
+  "provider": "openai",
+  "model": "gpt-image-2",
+  "prompt": "A blue ceramic cup on a cream background, soft side lighting.",
+  "size": "1024x1024",
+  "quality": "low",
+  "num_outputs": 1,
+  "title": "blue-cup",
+  "dry_run": true
+}
+```
+
+Expected: `status="planned"`, `billing_confirmation_required=true`, a billing
+notice, and `projected_job_dir`. No provider request or output file is created.
+Dry runs do not establish key access or that referenced files exist.
+
+Tell the user: "This uses separately billed OpenAI API access, not your
+ChatGPT/Codex subscription. May I generate one low-quality 1024×1024 image?"
+If the user has already approved this exact request or a bounded batch that
+includes it, use that authorization without asking again.
+
+After approval, repeat the same call with `dry_run=false` and
+`allow_api_billing=true`. Do not change its count, quality, size, or scope beyond
+the approval. Do not set the flag just to silence an error. The flag records
+caller confirmation; it is not independent proof of human consent or a spend cap.
+
+Expected: `status="ok"`, `outputs[]`, `job_dir`, `request_id`, and available
+`usage`. Open/view `outputs[0].path`, check the actual width/height and image,
+and read `<job_dir>/job.json` for the record. A successful API response is not
+the user's creative approval.
+
+## Edit the returned image
+
+Use the exact path from `outputs[0].path`, not a guessed filename. Call
+`generate_image` with the same provider/size/quality, set `image` to that path,
+and give a bounded edit prompt such as "Change only the cup glaze to green."
+Preview with `dry_run=true`; execute with `allow_api_billing=true` only after
+approval that includes this additional billable edit.
+
+`image` plus an `images` list supplies ordered references (duplicate paths are
+deduplicated). OpenAI accepts PNG/JPEG/WebP inputs; the adapter validates up to
+16 references, each below 50 MiB. The first request without references selects
+generation; adding references selects editing automatically.
+
+OpenAI Images API calls are stateless here. Do not pass Gemini
+`previous_interaction_id`, `store`, `thinking_level`, `temperature`,
+`system_prompt`, `aspect_ratio`, or `image_size`. Use `size` for dimensions and
+put instructions in `prompt`. There is no mask parameter in this adapter yet.
+
+For repeatable settings, select quality explicitly; `auto` lets the provider
+choose. PNG is the default output format; JPEG/WebP and compression are
+selectable. The returned `response_metadata` and decoded image dimensions
+describe the actual result. Built-in host ImageGen controls may differ; do not
+infer its quality tier from the appearance or dimensions of an image.
+
+## Run a batch or use the CLI instead
+
+```bash
+# Free preview: two low-quality 1536x1024 images.
+uv run gemini-video-prompts prompts/example_openai_image_batch.yaml --plan
+
+# Only after user approval for that two-image batch; this makes billable calls.
+uv run --extra openai gemini-video-prompts prompts/example_openai_image_batch.yaml \
+  --allow-api-billing --fail-fast
+```
+
+For a single CLI image, use `--prompt`, `--mode image`, `--provider openai`,
+`--size`, `--quality`, and `--plan`; replace `--plan` with `--allow-api-billing`
+after approval. The CLI otherwise defaults to video. Add `--image` for an edit.
+`--image`/`--images` are inline-prompt options; in a batch, put reference paths
+inside each job. Batch reference paths resolve relative to the batch file.
+
+The CLI flag approves only the current invocation. Batch contents cannot
+authorize billing. `--limit N` limits jobs, not images; sum each job's
+`num_outputs` when requesting approval. `--fail-fast` stops after a failure.
+Without it, the CLI continues to later jobs. See the [supported keys](../README.md#supported-keys).
+
+## Find results and recover from errors
+
+Image calls are blocking and return their output paths directly. There is no
+OpenAI image job ID to poll. `get_generation` and `list_generations` cover
+async video jobs, not image records. For images, retain the returned result
+and read its `job.json`; CLI batches also write a run manifest.
+
+Relative `out_root` resolves against the checkout root. Use an explicit absolute
+`out_root` for project-owned media. Existing image job names are deterministic:
+the same resolved request, title, date, and output root can reuse its directory
+and overwrite outputs. Use a distinct `title` or output root to retain another
+take. A matching hash is not a cache hit or an idempotency guarantee.
+
+| Symptom | Next action |
+|---|---|
+| Tool lacks `provider` or billing argument | Check the checkout and restart the MCP server; refresh its tool list |
+| `API_BILLING_CONFIRMATION_REQUIRED` | Surface the billing notice and obtain scoped approval; do not auto-enable the flag |
+| `OPENAI_AUTH_ERROR` | Have the user set the key locally; check for an empty inherited env override without printing secrets |
+| `OPENAI_SETUP_ERROR` | Install/run with `--extra openai`; reconnect the MCP client |
+| `INVALID_INPUT` | Correct the named parameter; use the OpenAI fields, not Gemini options |
+| `IMAGE_NOT_FOUND` | Use the real absolute path; a successful dry run does not check file existence |
+| HTTP 401/403 | Check key validity, endpoint permissions, and project access; do not switch accounts/providers silently |
+| HTTP 429 / insufficient quota | Report the API quota/billing issue; do not retry or fall back to another account |
+| Timeout or connection failure | Completion may be uncertain. Inspect the saved record and provider dashboard; another submission can incur another charge |
+| Empty, malformed, or partial output | Inspect any saved outputs and the failure record; do not report full success or silently top up missing images |
+
+OpenAI requests have a five-minute timeout and no automatic SDK retries. Once
+execution begins, a job record is written; early validation or billing-gate
+failures do not write one. Successful records contain usage, not a dollar invoice.
+Do not print full provider errors or credentials while troubleshooting.
+
+## Verify documentation and understand its evidence
+
+```bash
+uv run python scripts/update_tool_reference.py --check
+uv run --extra openai pytest -q
+uv run --extra openai ruff check src tests scripts
+```
+
+These are offline checks. The [tool reference](TOOL_REFERENCE.md) contains all
+registered tool input schemas and descriptions. [README.md](../README.md) is
+the broader usage guide. [MCP_DESIGN.md](../MCP_DESIGN.md) retains historical
+design stages, not copy/paste setup instructions. [LIVE_VERIFICATION.md](../LIVE_VERIFICATION.md)
+records what was actually tested; success at one size/quality does not verify
+all combinations or grant authorization for another paid test.

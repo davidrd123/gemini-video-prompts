@@ -323,6 +323,12 @@ def build_resolved_image_job(
     source_index: int = 1,
     source_format: str = "inline",
     batch_file: Optional[str] = None,
+    provider: str = "gemini",
+    size: Optional[str] = None,
+    quality: Optional[str] = None,
+    output_format: Optional[str] = None,
+    background: Optional[str] = None,
+    output_compression: Optional[int] = None,
 ) -> dict[str, Any]:
     """Build a resolved image-mode job dict from inline parameters.
 
@@ -333,15 +339,28 @@ def build_resolved_image_job(
     if not isinstance(prompt, str) or not prompt.strip():
         raise RuntimeError("prompt is required")
 
+    if provider not in {"gemini", "openai"}:
+        raise RuntimeError("INVALID_INPUT: provider must be gemini or openai")
+    openai_options = {
+        "size": size, "quality": quality, "output_format": output_format,
+        "background": background, "output_compression": output_compression,
+    }
+    if provider == "gemini" and any(value is not None for value in openai_options.values()):
+        raise RuntimeError("INVALID_INPUT: size, quality, output_format, background, and "
+                           "output_compression require provider=openai")
+
     resolved_title = title if title else prompt_stem(prompt)
     resolved_model = (
-        model if model else (os.getenv("GEMINI_IMAGE_MODEL") or DEFAULT_IMAGE_MODEL)
+        model if model else (
+            "gpt-image-2" if provider == "openai"
+            else (os.getenv("GEMINI_IMAGE_MODEL") or DEFAULT_IMAGE_MODEL)
+        )
     )
     resolved_num_outputs = num_outputs if num_outputs is not None else 1
     resolved_system_prompt = system_prompt if system_prompt is not None else ""
     resolved_out_root = resolve_output_root(str(out_root) if out_root else "out")
 
-    return {
+    resolved = {
         "mode": "image",
         "title": str(resolved_title),
         "prompt": prompt.strip(),
@@ -365,6 +384,15 @@ def build_resolved_image_job(
         "source_format": source_format,
         "batch_file": batch_file,
     }
+    # Leave legacy Gemini jobs byte-for-byte compatible with existing hashes.
+    if provider == "openai":
+        from .openai_images import validate_job
+
+        resolved.update(provider=provider, **openai_options)
+        validate_job(resolved)
+    elif str(resolved_model).startswith("gpt-image-"):
+        raise RuntimeError("INVALID_INPUT: GPT Image models require provider=openai")
+    return resolved
 
 
 def resolved_job(
@@ -413,9 +441,20 @@ def resolved_job(
             source_index=merged.get("source_index"),
             source_format=merged.get("source_format"),
             batch_file=str(batch_path.resolve()),
+            provider=merged.get("provider") or "gemini",
+            size=merged.get("size"),
+            quality=merged.get("quality"),
+            output_format=merged.get("output_format"),
+            background=merged.get("background"),
+            output_compression=merged.get("output_compression"),
         )
 
     # Video mode
+    if merged.get("provider") not in {None, "gemini"} or any(
+        merged.get(key) is not None
+        for key in ("size", "quality", "output_format", "background", "output_compression")
+    ):
+        raise RuntimeError("INVALID_INPUT: OpenAI options require mode=image")
     title = str(merged.get("title") or prompt_stem(prompt))
     default_model = os.getenv("GEMINI_VIDEO_MODEL") or DEFAULT_VIDEO_MODEL
     model = str(merged.get("model") or default_model)
@@ -469,10 +508,21 @@ def build_job_hash(job: dict[str, Any]) -> str:
         "config": job.get("config") or {},
     }
     raw = json.dumps(payload, sort_keys=True).encode("utf-8")
+    if job.get("provider") == "openai":
+        payload.update({key: job.get(key) for key in (
+            "provider", "size", "quality", "output_format", "background", "output_compression",
+        )})
+        raw = json.dumps(payload, sort_keys=True).encode("utf-8")
     return hashlib.sha256(raw).hexdigest()[:8]
 
 
 def summarize_job(index: int, job: dict[str, Any]) -> dict[str, Any]:
+    billing = {}
+    if job.get("provider") == "openai":
+        from .openai_images import BILLING_NOTICE
+
+        billing = {"access": "api_key", "billing_confirmation_required": True,
+                   "billing_notice": BILLING_NOTICE}
     return {
         "index": index,
         "mode": job["mode"],
@@ -493,6 +543,10 @@ def summarize_job(index: int, job: dict[str, Any]) -> dict[str, Any]:
         "config": job.get("config") or {},
         "prompt_preview": job["prompt"][:120],
         "out_root": str(job["out_root"]),
+        **billing,
+        **({key: job.get(key) for key in (
+            "provider", "size", "quality", "output_format", "background", "output_compression",
+        )} if job.get("provider") == "openai" else {}),
     }
 
 
@@ -878,7 +932,7 @@ def plan_payload(batch_path: Path, jobs: list[dict[str, Any]]) -> dict[str, Any]
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Batch Gemini image or video generation from text or YAML prompt files."
+        description="Batch Gemini/OpenAI image or Gemini video generation from prompt files."
     )
     parser.add_argument(
         "batch",
@@ -936,6 +990,16 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--temperature", type=float, help="Optional image generation sampling override.")
     parser.add_argument("--system-prompt", help="Override system_prompt for image generation.")
     parser.add_argument("--image-size", help="Override image_size for image generation.")
+    parser.add_argument("--provider", choices=("gemini", "openai"), help="Image provider; default gemini.")
+    parser.add_argument("--size", help="OpenAI pixel dimensions, e.g. 1536x1024, or auto.")
+    parser.add_argument("--quality", choices=("auto", "low", "medium", "high"))
+    parser.add_argument("--output-format", choices=("png", "jpeg", "webp"))
+    parser.add_argument("--background", choices=("auto", "opaque", "transparent"))
+    parser.add_argument("--output-compression", type=int, help="OpenAI JPEG/WebP compression, 0..100.")
+    parser.add_argument(
+        "--allow-api-billing", action="store_true",
+        help="Confirm separately billed OpenAI API use for this invocation. Obtain user approval first.",
+    )
     parser.add_argument("--out-root", help="Override the output root directory.")
     parser.add_argument("--poll-seconds", type=int, default=10, help="Polling interval.")
     parser.add_argument("--limit", type=int, help="Only run the first N jobs.")
@@ -992,6 +1056,12 @@ def main(argv: Optional[list[str]] = None) -> int:
         "system_prompt": args.system_prompt,
         "image_size": args.image_size,
         "out_root": args.out_root,
+        "provider": args.provider,
+        "size": args.size,
+        "quality": args.quality,
+        "output_format": args.output_format,
+        "background": args.background,
+        "output_compression": args.output_compression,
     }
     jobs = [
         resolved_job(
@@ -1014,11 +1084,17 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(json.dumps(plan, indent=2))
         return 0
 
+    if any(job.get("provider") == "openai" for job in jobs) and not args.allow_api_billing:
+        from .openai_images import BILLING_NOTICE
+
+        print(f"API_BILLING_CONFIRMATION_REQUIRED: {BILLING_NOTICE}", file=sys.stderr)
+        return 2
+
     out_root = ensure_dir(Path(str(jobs[0]["out_root"])).resolve())
     day_dir = ensure_dir(out_root / dt.date.today().isoformat())
     manifest_path = day_dir / f"run-{dt.datetime.now().strftime('%Y%m%d-%H%M%S')}.json"
 
-    client, gtypes = init_client()
+    client = gtypes = None
     results: list[dict[str, Any]] = []
     failures = 0
 
@@ -1028,7 +1104,16 @@ def main(argv: Optional[list[str]] = None) -> int:
             f"({job['mode']}) with {job['model']}"
         )
         try:
-            if job["mode"] == "image":
+            if job.get("provider") == "openai":
+                from .openai_images import generate_openai_image_job
+
+                result = generate_openai_image_job(
+                    batch_path=batch_path, job=job, run_day_dir=day_dir,
+                    allow_api_billing=args.allow_api_billing,
+                )
+            elif job["mode"] == "image":
+                if client is None:
+                    client, gtypes = init_client()
                 result = generate_image_job(
                     client=client,
                     gtypes=gtypes,
@@ -1037,6 +1122,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                     run_day_dir=day_dir,
                 )
             else:
+                if client is None:
+                    client, gtypes = init_client()
                 result = generate_job(
                     client=client,
                     gtypes=gtypes,

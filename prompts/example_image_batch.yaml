@@ -1,6 +1,6 @@
 defaults:
   mode: image
-  model: gemini-3.1-flash-image-preview
+  model: gemini-3.1-flash-image
   num_outputs: 1
 
 jobs:
@@ -11,6 +11,7 @@ jobs:
       painterly but detailed.
 
   - title: "Poster cleanup"
+    # Placeholder relative to this batch file; replace before executing this job.
     image: refs/poster_source.png
     prompt: >
       Replace the messy hand-drawn title with a clean, elegant serif title that reads

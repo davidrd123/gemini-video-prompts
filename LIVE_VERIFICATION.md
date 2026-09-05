@@ -1,5 +1,56 @@
 # Live Verification Notes
 
+## Documentation walkthrough — 2026-09-04 (no provider calls)
+
+A fresh source distribution was extracted outside the working checkout,
+without `.env` or an existing environment. `uv sync --locked --extra openai`
+succeeded there. The archive includes the lockfile, tests, agent quickstart,
+generated tool reference, and its regeneration/check script.
+
+The documented CLI help and two-job OpenAI batch preview ran successfully.
+Both actual stdio commands from `.mcp.example.json` launched through an MCP
+client and listed their tools: seven generation tools and twelve analysis
+tools. The exact quickstart JSON returned a free planned image request with
+the billing notice; removing `dry_run` without granting billing permission
+returned `API_BILLING_CONFIRMATION_REQUIRED`. No output directory was created.
+The generated reference matched the registered input schemas. This verifies
+the documented launch/protocol path, not every possible client UI or account.
+
+These checks made no paid requests. The earlier two image calls below remain
+the live provider evidence.
+
+## OpenAI GPT-Image-2 — 2026-09-04
+
+Direct API support was checked on branch `codex/openai-image-api` using the
+optional OpenAI SDK 2.54.0 in a separate temporary environment. Existing
+locked dependency versions and the original `.venv` were preserved. The user
+supplied a local API key for the bounded generation/edit test; no key values
+are recorded here. Both calls used explicit billing confirmation, `quality=low`,
+`size=1024x1024`, PNG, and one output.
+
+| Check | Observed result |
+|---|---|
+| Generation through the MCP function | HTTP 200; valid 1024×1024 blue-cup image |
+| Reference edit through the CLI | Succeeded; valid 1024×1024 image with green glaze |
+| Visual inspection | Cup shape, handle, framing, and cream background remained visually similar; glaze changed to green. This is a smoke test, not a fidelity benchmark. |
+| Returned settings | Both responses reported 1024×1024, low quality, PNG, opaque background |
+| Usage | Generation: 25 input / 196 output tokens. Edit: 1,055 input / 196 output tokens, including 1,024 image-input tokens. These are usage records, not an invoice. |
+| Request IDs | Generation `req_0e18856f335a455693d926964a1929f3`; edit `req_37a55e6035184f49847abd77f6daaf12` |
+| Original suite before changes | 125 passed |
+| Full suite with OpenAI SDK | 172 passed; SDK HTTP transport mocked in automated tests |
+| Original environment without SDK | 169 passed; three optional SDK tests skipped |
+| Installation/build | Locked optional-extra install succeeded in a temporary environment; wheel contains adapter/extra metadata and source distribution contains batch example |
+| Compatibility | Existing package versions unchanged; representative Gemini resolved jobs and hashes match pre-change HEAD; Gemini stays the default |
+| Billing boundary | MCP/worker refuse execution without `allow_api_billing=true`; CLI refuses before any batch job without `--allow-api-billing`; batch contents cannot supply that authorization |
+
+Local artifacts are archived under `out/openai-api-verification-2026-09-04/`.
+The unmodified job records retain the original `/private/tmp/` execution paths;
+the archive also contains the original image bytes and the CLI run manifest.
+No further billable calls were made. High quality, other resolutions, transparency,
+multiple references, and multi-output requests were not live-tested.
+
+## Earlier provider verification
+
 What we learned by running the tools end-to-end during the v1 build. Everything here is grounded in actual API calls against real artifacts; nothing is hypothetical. The code itself, design doc, and git log capture *what we built*; this captures *how it behaves in practice* and *where the rough edges are*.
 
 Updated 2026-09-02. v1 closed out (Step 8); v2 #1 (live Seedance fire) added the same day; v2 #5 (local async API) implemented + mock-verified + live-smoked; v2 #2 (`.mcp.example.json` + `riff-mcp-doctor`) wired the surface for agent use; project `.mcp.json` wired in this repo and exercised end-to-end against vault-grounded inputs from the sibling GML 2026 Closing Film vault — surfaced the **input-sensitivity finding** that `intent` text is the load-bearing variable for `score_image` (same image / same prompt, ~65pt swing on `creative_brief_fidelity` based purely on intent composition). Also live-fired the full mutation→describe→score riff loop end-to-end through MCP for the first time. On 2026-08-13, the media-analysis default moved to `gemini-3.7-flash` after registry and multimodal live verification; on 2026-09-02 it moved to `gemini-3.8-flash` the same way. **What is NOT yet validated**: whether the scores Gemini returns track production judgment. That requires a human-in-the-loop calibration pass (see v2 outstanding #13). See "Vault-grounded input-sensitivity characterization" section.

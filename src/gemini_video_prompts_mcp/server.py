@@ -1,7 +1,7 @@
 """FastMCP server exposing gemini-video-prompts as MCP tools.
 
 Tools:
-- generate_image  — Gemini image generation (wraps generate_image_job)
+- generate_image  — Gemini or OpenAI GPT Image generation
 - generate_video  — Seedance 2.5 / 2.0 via Replicate (uses seedance.py adapter)
 - start_video_job, get_video_job, cancel_video_job
                   — local async control surface for Seedance predictions
@@ -612,31 +612,38 @@ def _load_async_video_status(job_id: str, out_root: Optional[str]) -> tuple[Path
 def generate_image(
     prompt: str,
     system_prompt: Optional[str] = None,
-    model: str = "gemini-3-pro-image",
+    model: Optional[str] = None,
     image: Optional[str] = None,
     images: Optional[list[str]] = None,
     aspect_ratio: Optional[str] = None,
     image_size: Optional[str] = None,
     temperature: Optional[float] = None,
     num_outputs: int = 1,
-    api: str = "generate_content",
+    api: Optional[str] = None,
     thinking_level: Optional[str] = None,
     store: bool = False,
     previous_interaction_id: Optional[str] = None,
     title: Optional[str] = None,
     out_root: Optional[str] = None,
     dry_run: bool = False,
+    provider: str = "gemini",
+    size: Optional[str] = None,
+    quality: Optional[str] = None,
+    output_format: Optional[str] = None,
+    background: Optional[str] = None,
+    output_compression: Optional[int] = None,
+    allow_api_billing: bool = False,
 ) -> dict[str, Any]:
-    """Generate one or more images with the Gemini image model.
+    """Generate one or more images with Gemini (default) or OpenAI GPT Image 2.
 
     Wraps the gemini-video-prompts CLI's image generation worker. Outputs
-    land at ``<out_root>/<today>/<model>/<seq>_<title>_<hash>/<title>_NN.png``,
-    matching the CLI's directory layout exactly.
+    land at ``<out_root>/<today>/<model>/<seq>_<title>_<hash>/``, matching the
+    CLI layout. Gemini saves PNG; OpenAI saves the returned PNG/JPEG/WebP bytes.
 
     Args:
         prompt: The image generation prompt.
         system_prompt: Style / behavior instruction sent as system_instruction.
-        model: Gemini image model id. Default ``gemini-3-pro-image``.
+        model: Defaults to ``gemini-3-pro-image`` for Gemini or ``gpt-image-2`` for OpenAI.
         image: Path to a single reference image (img2img).
         images: List of additional reference image paths.
         aspect_ratio: e.g. ``"16:9"``, ``"9:16"``, ``"1:1"``, ``"3:4"``.
@@ -644,8 +651,8 @@ def generate_image(
         image_size: e.g. ``"1K"``, ``"2K"``. Same caveat as aspect_ratio.
         temperature: Optional override; omitted by default for Gemini 3.x models.
         num_outputs: 1..4 images per call.
-        api: ``generate_content`` for a one-shot request or ``interactions``
-            for a stored/stateful request that can return an interaction id.
+        api: Gemini: ``generate_content`` (default) or ``interactions``.
+            OpenAI: ``images`` (default); references automatically select edits.
         thinking_level: Optional ``minimal``/``low``/``medium``/``high``.
             Model support varies; Gemini 3.1 Flash Image documents minimal/high.
         store: Persist an Interactions request so it can be continued later.
@@ -655,6 +662,25 @@ def generate_image(
         out_root: Override output root; default ``<cli-repo>/out``.
         dry_run: If True, return the resolved job + projected_job_dir without
             calling the model or creating files.
+        provider: ``gemini`` (default) or ``openai``. OpenAI requires
+            ``uv sync --extra openai`` and ``OPENAI_API_KEY``; API billing applies.
+        size: OpenAI pixel dimensions, e.g. ``1536x1024``, or ``auto``.
+        quality: OpenAI ``auto``, ``low``, ``medium``, or ``high``.
+        output_format: OpenAI ``png`` (default), ``jpeg``, or ``webp``.
+        background: OpenAI ``auto``, ``opaque``, or ``transparent`` (PNG/WebP).
+        output_compression: OpenAI JPEG/WebP compression, integer 0..100.
+        allow_api_billing: Required True for a billable OpenAI request; default False.
+            OpenAI API charges are separate from ChatGPT/Codex subscription limits.
+            Ask the user to approve this request or a bounded batch before setting
+            True. An installed key, provider selection, or auto-approved MCP tool
+            does not establish spending authorization. Do not silently retry or
+            switch from subscription generation to API billing. Dry runs are free.
+
+        OpenAI does not accept Gemini aspect_ratio, image_size, temperature,
+        system_prompt, thinking_level, or stored interaction options. Include
+        all instructions in prompt and pass saved output paths as references
+        for subsequent edits. OpenAI results also record provider, access,
+        request_id, usage, response_metadata, and original image byte hashes.
 
     Returns:
         On success: the full result dict from ``generate_image_job`` with
@@ -676,15 +702,16 @@ def generate_image(
     if num_outputs < 1 or num_outputs > 4:
         raise RuntimeError("INVALID_INPUT: num_outputs must be between 1 and 4")
 
-    if api not in {"generate_content", "interactions"}:
-        raise RuntimeError("INVALID_INPUT: api must be generate_content or interactions")
+    api = api if api is not None else ("images" if provider == "openai" else "generate_content")
+    if provider == "gemini" and api not in {"generate_content", "interactions"}:
+        raise RuntimeError("INVALID_INPUT: Gemini api must be generate_content or interactions")
     if previous_interaction_id and api != "interactions":
         raise RuntimeError("INVALID_INPUT: previous_interaction_id requires api=interactions")
     batch_path = (Path.cwd() / "<inline>").resolve()
     job = build_resolved_image_job(
         prompt=prompt,
         title=title,
-        model=model,
+        model=model or ("gpt-image-2" if provider == "openai" else "gemini-3-pro-image"),
         system_prompt=system_prompt,
         image=image,
         images=images,
@@ -698,6 +725,12 @@ def generate_image(
         source_index=1,
         source_format="inline",
         batch_file=str(batch_path),
+        provider=provider,
+        size=size,
+        quality=quality,
+        output_format=output_format,
+        background=background,
+        output_compression=output_compression,
     )
 
     if dry_run:
@@ -715,8 +748,16 @@ def generate_image(
             if not Path(path_str).expanduser().is_file():
                 raise RuntimeError(f"IMAGE_NOT_FOUND: {path_str}")
 
-    client, gtypes = init_client()
     out_root_path = job["out_root"]
+    if provider == "openai":
+        from gemini_video_prompts.openai_images import generate_openai_image_job
+
+        return generate_openai_image_job(
+            batch_path=batch_path, job=job,
+            run_day_dir=out_root_path / dt.date.today().isoformat(),
+            allow_api_billing=allow_api_billing,
+        )
+    client, gtypes = init_client()
     day_dir = ensure_dir(out_root_path / dt.date.today().isoformat())
     return generate_image_job(
         client=client,

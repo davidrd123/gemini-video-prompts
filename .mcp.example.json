@@ -1,5 +1,5 @@
 {
-  "_comment": "Example Claude Code MCP server config for riff-mcp. Copy to ~/.claude/mcp.json (or merge into the existing file) and replace REPO_PATH + env values. See README for details.",
+  "_comment": "Merge into your MCP client's server configuration and replace REPO_PATH. Credentials load from this checkout's untracked .env or the inherited environment. Do not add empty env entries: they can shadow .env keys. The generation server installs optional OpenAI support, but Gemini remains the default. See README for client-specific registration.",
   "mcpServers": {
     "gemini-prompts": {
       "command": "uv",
@@ -7,12 +7,10 @@
         "--directory",
         "REPO_PATH",
         "run",
+        "--extra",
+        "openai",
         "gemini-prompts-mcp"
-      ],
-      "env": {
-        "GEMINI_API_KEY": "",
-        "REPLICATE_API_TOKEN": ""
-      }
+      ]
     },
     "media-analysis": {
       "command": "uv",
@@ -21,10 +19,7 @@
         "REPO_PATH",
         "run",
         "media-analysis-mcp"
-      ],
-      "env": {
-        "GEMINI_API_KEY": ""
-      }
+      ]
     }
   }
 }

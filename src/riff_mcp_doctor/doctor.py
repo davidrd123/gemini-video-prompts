@@ -16,11 +16,11 @@ import sys
 from dataclasses import asdict, dataclass, field
 from typing import Optional
 
-# ``GEMINI_API_KEY`` and ``REPLICATE_API_TOKEN`` are the only secrets the
-# servers read directly. Everything else is either a Python import or a
-# binary on PATH.
+# OpenAI is optional; --provider openai checks it independently of the
+# existing Gemini/Replicate installation.
 GEMINI_KEY = "GEMINI_API_KEY"
 REPLICATE_TOKEN = "REPLICATE_API_TOKEN"
+OPENAI_KEY = "OPENAI_API_KEY"
 
 GENERATION_SERVER = "gemini-prompts-mcp"
 ANALYSIS_SERVER = "media-analysis-mcp"
@@ -243,6 +243,30 @@ def run_all_checks(*, network: bool = False) -> list[CheckResult]:
     return results
 
 
+def run_openai_checks(*, network: bool = False) -> list[CheckResult]:
+    """Check only direct OpenAI image readiness; never generate billable images."""
+    load_dotenv_if_available()
+    users = [f"{GENERATION_SERVER}.generate_image (provider=openai)", BATCH_CLI]
+    results = [check_env(OPENAI_KEY, users)]
+    results.extend(check_python_pkg(name, users) for name in ("openai", "PIL", "mcp", "dotenv"))
+    if network:
+        check = CheckResult("openai", "network", "skipped", "key or SDK unavailable", users)
+        if all(result.status == "ok" for result in results):
+            try:
+                from openai import OpenAI
+
+                with OpenAI(api_key=os.environ[OPENAI_KEY], timeout=20.0, max_retries=0) as client:
+                    client.models.retrieve("gpt-image-2")
+                check.status = "ok"
+                check.detail = "gpt-image-2 model lookup ok; generation/billing access not tested"
+            except Exception as exc:
+                check.status = "fail"
+                check.detail = (f"{type(exc).__name__}; code={getattr(exc, 'code', None)}; "
+                                f"request_id={getattr(exc, 'request_id', None)}")
+        results.append(check)
+    return results
+
+
 _STATUS_LABEL = {
     "ok": "OK",
     "warn": "WARN",
@@ -317,12 +341,17 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         action="store_true",
         help="Emit results as JSON instead of plain text.",
     )
+    parser.add_argument(
+        "--provider", choices=("legacy", "openai"), default="legacy",
+        help="legacy checks Gemini/Replicate (default); openai checks only optional OpenAI images.",
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: Optional[list[str]] = None) -> int:
     args = parse_args(argv)
-    results = run_all_checks(network=args.network)
+    results = (run_openai_checks(network=args.network) if args.provider == "openai"
+               else run_all_checks(network=args.network))
     output = format_json(results) if args.json else format_text(results)
     sys.stdout.write(output)
     failures = [r for r in results if r.status == "fail"]
