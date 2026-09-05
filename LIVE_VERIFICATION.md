@@ -421,3 +421,14 @@ Pro is roughly 5× more expensive than Flash on token cost; Flash is sufficient 
 - `db27c51` — Capture v1 live-verification findings before context compact
 
 For future-you after compact: read `MCP_DESIGN.md` (architecture) + this doc (behavior, current state, v2 progress) + `git log --oneline -20`. Test suite: `uv run --with pytest pytest tests/ -v` → 35 passing. Doctor sanity: `uv run riff-mcp-doctor --network`.
+
+## Agentic video integration
+
+The Graffito Scene 4 task `01a06ec4-3543-7db3-a217-6db5e6b4a9d8` reports a
+successful direct REST probe with six processing calls and six results. That
+probe preceded this Riff adapter and is not a live verification of the adapter.
+No additional paid probe was submitted for this change. Offline tests exercise
+the installed Google SDK with mocked HTTP transport, request serialization,
+raw trace retention, matched/unmatched evidence, reference images, both tools,
+validation, and upload cleanup on success and failure. Existing static tests
+remain in the regression suite.
