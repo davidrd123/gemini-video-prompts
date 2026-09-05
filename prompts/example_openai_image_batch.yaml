@@ -1,0 +1,17 @@
+# Preview: uv run gemini-video-prompts prompts/example_openai_image_batch.yaml --plan
+# After user approval (billable): uv run --extra openai gemini-video-prompts prompts/example_openai_image_batch.yaml --allow-api-billing
+defaults:
+  mode: image
+  provider: openai
+  model: gpt-image-2
+  size: 1536x1024
+  quality: low
+  output_format: png
+  num_outputs: 1
+
+jobs:
+  - title: blue-ceramic-cup
+    prompt: A blue ceramic cup on a cream background, soft side lighting.
+  - title: green-ceramic-cup
+    prompt: A green ceramic cup on a cream background, soft side lighting.
+    # For an edit, add image: /absolute/path/to/an/existing/cup.png

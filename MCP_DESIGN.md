@@ -1,8 +1,41 @@
 # MCP Layer — Design
 
-**Status:** v1 implemented through Step 8; v2 Option A local async jobs live-smoked
+**Status:** Gemini/Seedance tools implemented; optional OpenAI image generation and edits live-smoked
 **Author:** David Dickinson + Claude
-**Last updated:** 2026-05-09
+**Last updated:** 2026-09-04
+
+**For execution:** read [the agent quickstart](docs/AGENT_QUICKSTART.md) and
+[generated tool reference](docs/TOOL_REFERENCE.md). This file retains the
+design history; older signatures, dependency snippets, file line numbers,
+and prospective steps below are not current installation instructions.
+
+## Current OpenAI image extension — 2026-09-04
+
+`generate_image` and the batch CLI now accept explicit `provider="openai"`.
+`gemini_video_prompts/openai_images.py` implements direct GPT-Image-2 generation
+and reference edits. The optional `openai` extra and `OPENAI_API_KEY` are needed
+only for execution; dry runs remain credential-free. Gemini stays the default,
+and existing resolved Gemini jobs, hashes, and worker code are preserved.
+
+OpenAI has separate size/quality/format controls and rejects Gemini-only
+settings. It records API access, original output bytes, hashes, usage, and
+provider request IDs in the existing output layout. There is no subscription
+bridge or cross-provider fallback. See README for the current install, tool
+options, and examples; older design signatures below describe their original
+implementation stage, not the complete current interface.
+
+Billable OpenAI execution also requires `allow_api_billing=true` in MCP or
+`--allow-api-billing` in the CLI, following explicit user approval for the
+request or bounded batch. Keys and tool auto-approval do not establish that
+authorization. The confirmation is recorded with the result; dry runs surface
+the billing boundary and remain free. This is a caller-confirmation check,
+not independent proof of human consent or a cumulative spending cap.
+
+Local integration tests include the real SDK with mocked HTTP transport.
+One low-quality 1024×1024 generation and one reference edit succeeded on
+2026-09-04; see LIVE_VERIFICATION.md. Other sizes and formats have local
+validation/transport coverage but were not live-tested. Older verification
+entries remain historical evidence for their respective providers.
 
 Wrap the existing `gemini-video-prompts` CLI as an MCP server, and build a separate media-analysis MCP, so Claude Code can invoke generation and evaluation as typed tool calls instead of shelling out to `Bash → uv run`.
 
@@ -97,7 +130,7 @@ Two independent MCP servers, each registered in `~/.claude.json` (or per-project
 
 | MCP | Repo | Purpose | Backends |
 |-----|------|---------|----------|
-| `gemini-prompts-mcp` | sibling package inside `riff-mcp/` | Generate images and videos | Gemini (image), Replicate-Seedance (video) |
+| `gemini-prompts-mcp` | sibling package inside `riff-mcp/` | Generate images and videos | Gemini or opt-in OpenAI (image), Replicate-Seedance (video) |
 | `media-analysis-mcp` | sibling package inside `riff-mcp/` | Describe / score / compare images and videos; extract frames; extract visual tokens | Gemini multimodal (analysis); ffmpeg/ffprobe (frame extraction, media info) |
 
 ### Why one MCP for both image + video gen (not split)

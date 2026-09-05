@@ -1,7 +1,7 @@
 [project]
 name = "riff-mcp"
 version = "0.2.0"
-description = "Batch Gemini media generation CLI plus companion MCP servers (gemini-prompts-mcp, media-analysis-mcp) for the riff workflow — generate, analyze, iterate."
+description = "Batch Gemini/OpenAI image generation CLI plus companion generation and media-analysis MCP servers for the riff workflow."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -13,6 +13,9 @@ dependencies = [
     "replicate>=0.34.0",
     "pydantic>=2.0",
 ]
+
+[project.optional-dependencies]
+openai = ["openai>=2.0.0"]
 
 [project.scripts]
 gemini-video-prompts = "gemini_video_prompts.cli:main"
@@ -40,6 +43,13 @@ include = [
   "src/riff_mcp_doctor",
   "pyproject.toml",
   "README.md",
+  "AGENTS.md",
+  "MCP_DESIGN.md",
+  "LIVE_VERIFICATION.md",
+  "docs",
+  "scripts/update_tool_reference.py",
+  "tests",
+  "uv.lock",
   ".env.example",
   ".mcp.example.json",
   "prompts",

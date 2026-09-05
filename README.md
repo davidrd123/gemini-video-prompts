@@ -1,9 +1,14 @@
 # riff-mcp
 
+**New agent or teammate:** start with the [agent quickstart](docs/AGENT_QUICKSTART.md).
+It includes the setup, billing boundary, first image, edit, and error recovery.
+The [generated tool reference](docs/TOOL_REFERENCE.md) lists the actual MCP
+schemas. No private vault or external prompting skill is required to run riff.
+
 Toolkit for the *riff* workflow — iteratively generate, analyze, and refine AI-generated media. Three pieces in one repo:
 
-- `gemini-video-prompts` — the original batch CLI for Gemini image/video generation (still the local entry point for batch runs and dry-runs).
-- `gemini-prompts-mcp` — wraps the CLI as MCP tools (`generate_image` via Gemini, `generate_video` via Replicate-Seedance).
+- `gemini-video-prompts` — batch CLI for Gemini/OpenAI images and Gemini video generation, including dry-runs.
+- `gemini-prompts-mcp` — wraps generation as MCP tools (`generate_image` via Gemini or opt-in OpenAI, `generate_video` via Replicate-Seedance).
 - `media-analysis-mcp` — Gemini multimodal analysis (`analyze_*`, `describe_*`, `score_*`, `compare_images`, `extract_visual_tokens`) + ffmpeg-based `extract_video_frames`.
 
 The name comes from the `generation-review-loop` skill's vocabulary for iterative prompt work — *the riff loop*: generate → review → extract → iterate. See [`MCP_DESIGN.md`](MCP_DESIGN.md) for the architecture.
@@ -13,8 +18,9 @@ The name comes from the `generation-review-loop` skill's vocabulary for iterativ
 The repo now has two generation paths:
 
 - **Standalone CLI** — built around the official `google-genai` Python SDK for
-  Gemini image generation and the original Veo video batch flow.
-- **MCP generation server** — `generate_image` reuses the Gemini image worker;
+  Gemini image generation and the original Veo video batch flow, with an optional
+  OpenAI Images API adapter.
+- **MCP generation server** — `generate_image` shares the CLI's image workers;
   `generate_video` uses Seedance 2.5 through Replicate (2.0 remains selectable
   via the `model` arg — it is the only one with 1080p/4k output).
 
@@ -22,24 +28,39 @@ Current defaults:
 
 - CLI video default model: `veo-3.1-fast-generate-preview`
 - CLI/MCP image default model: `gemini-3-pro-image`
+- Opt-in OpenAI image model (`provider="openai"`): `gpt-image-2`
 - MCP video default model: `bytedance/seedance-2.5`
 - Media-analysis image default model: `gemini-3.7-flash`
 - Media-analysis video default model: `gemini-3.7-flash`
 
-Model strings remain configurable so a teammate with access to a newer preview
-or provider model can swap it in without editing the code.
+Gemini model strings are configurable. The OpenAI adapter accepts `gpt-image-2`
+and dated GPT-Image-2 snapshots; it does not route arbitrary model names.
 
 ## Install
+
+Requires Python 3.10+. Video probing and frame extraction also need `ffprobe`
+and `ffmpeg` on PATH. Direct image generation does not require those binaries.
 
 Preferred with `uv`:
 
 ```bash
 cd riff-mcp
-uv sync
-cp .env.example .env
+uv sync --locked
+cp -n .env.example .env
 ```
 
-Then run with `uv run`.
+Then run with `uv run`. `cp -n` preserves an existing `.env`; uncomment and fill
+only the credentials for services you intend to use. Placeholder values are
+not valid credentials even if the doctor's presence check reports them as set.
+
+For optional OpenAI image support:
+
+```bash
+uv sync --locked --extra openai
+```
+
+Use `uv run --extra openai ...` for OpenAI-enabled CLI/server invocations.
+The extra installs the SDK; it does not select OpenAI or make API requests.
 
 Fallback with plain venv/pip:
 
@@ -49,13 +70,29 @@ python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 pip install -e .
-cp .env.example .env
+cp -n .env.example .env
 ```
 
-Then set the needed API tokens in `.env` or your shell:
+For OpenAI with pip, use `python -m pip install -e '.[openai]'` instead.
+Then set the needed API tokens in `.env` or the MCP server's environment:
 
-- `GEMINI_API_KEY` for CLI image/video generation and `media-analysis-mcp`
+- `GEMINI_API_KEY` for Gemini image/video generation and `media-analysis-mcp`
 - `REPLICATE_API_TOKEN` for MCP `generate_video`
+- `OPENAI_API_KEY` only for image calls explicitly selecting `provider="openai"`
+
+Each teammate uses their own untracked `.env`. OpenAI-only image generation
+does not require Gemini or Replicate keys. This configuration does not change
+the host agent's subscription sign-in. API calls have separate billing;
+Gemini/Replicate tools also use their respective APIs. Do not configure an
+OpenAI key on a machine that should not make OpenAI API calls.
+
+To update an existing checkout, inspect its branch and local changes, obtain
+the intended revision, then rerun the matching locked sync command. Stop running
+MCP servers before changing their shared environment and reconnect afterward
+so they load the new code and tool schema. `uv sync` can remove unselected
+extras; include `--extra openai` when retaining OpenAI support. Existing server
+names remain valid. Check `--help` for `--provider` and `--allow-api-billing`;
+the unchanged package version `0.2.0` alone does not identify this feature.
 
 ## Quick Start
 
@@ -65,28 +102,28 @@ Preview an image batch plan without calling the API:
 uv run gemini-video-prompts prompts/example_image_batch.txt --mode image --plan
 ```
 
-Run an image batch:
+Run an image batch (billable Gemini API calls):
 
 ```bash
 uv run gemini-video-prompts prompts/example_image_batch.txt --mode image
 ```
 
-Run a video batch:
+Run a video batch (billable Veo API calls; this is not MCP Seedance):
 
 ```bash
 uv run gemini-video-prompts prompts/example_batch.txt
 ```
 
-Generate a single image inline (no batch file needed):
+Generate a single Gemini image inline (billable; no batch file needed):
 
 ```bash
 uv run gemini-video-prompts --prompt "A glowing jellyfish drifting through neon kelp." --mode image
 ```
 
-Override the model for a teammate who has access to a newer one:
+Override the Gemini image model explicitly:
 
 ```bash
-uv run gemini-video-prompts prompts/example_image_batch.txt --mode image --model gemini-2.5-flash-image
+uv run gemini-video-prompts prompts/example_image_batch.txt --mode image --model gemini-3.1-flash-image
 ```
 
 ## MCP Servers
@@ -99,7 +136,7 @@ uv run gemini-prompts-mcp
 
 Generation tools:
 
-- `generate_image` — blocking Gemini image generation. It can use the
+- `generate_image` — blocking Gemini or OpenAI image generation. Gemini can use the
   one-shot `generate_content` path or a stored Interactions path for
   multi-turn image editing.
 - `generate_video` — blocking Replicate-Seedance generation, preserved for simple one-shot calls.
@@ -108,10 +145,87 @@ Generation tools:
 - `cancel_video_job` — cancels a running provider prediction and updates local status.
 - `get_generation` — returns the durable request, status, result, paths, and
   normalized seed provenance for one async job without polling.
-- `list_generations` — searches current and historical async records by prompt,
+- `list_generations` — searches current and historical async video records by prompt,
   title, model, status, or job ID.
 
-### Stateful image generation
+### OpenAI GPT-Image-2 generation and editing
+
+Install the `openai` extra and put `OPENAI_API_KEY=...` in your own `riff-mcp/.env`.
+Run the generation server with `uv run --extra openai gemini-prompts-mcp`.
+This example is a free MCP `generate_image` dry run:
+
+```json
+{
+  "provider": "openai",
+  "prompt": "A blue ceramic cup on a cream background, soft side lighting.",
+  "size": "1536x1024",
+  "quality": "low",
+  "dry_run": true
+}
+```
+
+**Billing boundary:** OpenAI API charges are separate from a ChatGPT/Codex
+subscription. An installed key does not authorize spending. The calling agent must ask
+the user to approve the request or a bounded batch before setting
+`allow_api_billing=true`. To execute the example after approval, remove
+`dry_run` and add `"allow_api_billing": true`. Without that explicit argument,
+OpenAI execution stops with `API_BILLING_CONFIRMATION_REQUIRED` before a call.
+The dry-run response includes the same billing notice for the agent to surface.
+
+The default OpenAI model is `gpt-image-2`; a dated snapshot can be selected
+explicitly. Add `image` or an ordered `images` list of local PNG/JPEG/WebP paths
+for reference-guided editing. For the next edit, pass the exact returned output path and
+the new instruction. Gemini interaction IDs cannot be used with OpenAI.
+
+CLI equivalents:
+
+```bash
+# Preview without credentials, SDK calls, or output files.
+uv run gemini-video-prompts prompts/example_openai_image_batch.yaml --plan
+
+# After user approval: generate using your API key (billable).
+uv run --extra openai gemini-video-prompts --mode image --provider openai \
+  --prompt "A blue ceramic cup on a cream background." --quality low --size 1536x1024 \
+  --allow-api-billing
+
+# After user approval: edit a local image (billable).
+uv run --extra openai gemini-video-prompts --mode image --provider openai \
+  --image /absolute/path/to/cup.png --prompt "Make the cup green; preserve everything else." \
+  --allow-api-billing
+```
+
+OpenAI controls are `size`, `quality`, `output_format`, `background`, and
+`output_compression`. Defaults are `auto` size/quality/background and PNG.
+Use `size` for pixel dimensions; Gemini `aspect_ratio`, `image_size`,
+`temperature`, `system_prompt`, thinking, and stored-interaction options are
+rejected. Put all instructions in `prompt`. PNG and WebP preserve transparency.
+See the [OpenAI image guide](https://developers.openai.com/api/docs/guides/image-generation)
+for model constraints, preview capabilities, and current pricing.
+
+The adapter validates size before execution: both edges must be multiples of
+16 and at most 3840, long/short edge ratio at most 3:1, and total pixels between
+655,360 and 8,294,400. Explicit `low`, `medium`, or `high` avoids leaving quality
+selection to `auto`; inspect returned `response_metadata` and output dimensions
+for the actual settings. The host's built-in ImageGen is a separate interface;
+riff cannot declare its quality tier or control its resolution.
+
+OpenAI is never selected automatically, and a failed Gemini request never
+falls back to OpenAI. Each call requests 1–4 outputs. Requests have a five-minute
+timeout and no automatic retries; a timeout can leave provider completion
+uncertain. Inspect the record before deliberately resubmitting.
+
+The CLI flag confirms API billing for that invocation and cannot be enabled by
+batch-file contents. There is no global "always allow" environment toggle.
+The MCP boolean records caller confirmation; it cannot independently prove a
+human approved it. If `generate_image` is auto-approved in your agent, keep
+the agent instructions in AGENTS.md and the tool description in force. Keep
+normal tool approval enabled when reviewing API spend per call matters. Neither
+the boolean nor the local output limit is a cumulative spending cap.
+
+### Stateful Gemini image generation
+
+The following examples use the Gemini API and can incur charges. They are
+unrelated to OpenAI's Images API or the host's subscription image tool.
 
 Use `api="interactions"` and `store=true` when a generated image may become the
 parent of a later edit. The result includes `interaction_ids`; pass the relevant
@@ -176,7 +290,9 @@ Analysis tools:
   and candidate ranking without first concatenating a review reel. It shares
   the high-thinking, 65,536-token video defaults and override behavior.
 - `describe_image` / `describe_video` — structured observation against a fixed taxonomy (8 categories for images, 12 for video). No scoring, no verdict — Claude is the judge. _Under review for deprecation_ — its baked-in taxonomy may not be justified vs. `analyze_*`; prefer `analyze_*` for new work.
-- `score_image` / `score_video` — calibrated 0–100 scoring across criteria (default: the 6 dimensions from `generation-review-loop`). Gemini is the judge.
+- `score_image` / `score_video` — model-generated 0–100 scores across criteria
+  (six built-in dimensions by default). Scores are advisory; agreement with
+  human production judgment has not been established.
 - `compare_images` — pick the best of N candidates against criteria; returns `best_index` + reasoning.
 - `extract_visual_tokens` — deconstruct an image into reusable prompt tokens (lighting/atmosphere/palette/materials/spatial_grammar by default).
 - `extract_video_frames` — ffmpeg-based frame extraction at custom timestamps; useful for feeding stills back into image tools.
@@ -201,22 +317,26 @@ Example MCP client config when the client launches from outside this repo:
   "mcpServers": {
     "gemini-prompts": {
       "command": "uv",
-      "args": ["--directory", "/Users/daviddickinson/Projects/Lora/riff-mcp", "run", "gemini-prompts-mcp"]
+      "args": ["--directory", "/ABSOLUTE/PATH/TO/riff-mcp", "run", "gemini-prompts-mcp"]
     },
     "media-analysis": {
       "command": "uv",
-      "args": ["--directory", "/Users/daviddickinson/Projects/Lora/riff-mcp", "run", "media-analysis-mcp"]
+      "args": ["--directory", "/ABSOLUTE/PATH/TO/riff-mcp", "run", "media-analysis-mcp"]
     }
   }
 }
 ```
 
 A copy-paste-ready template lives at `.mcp.example.json` — replace `REPO_PATH`
-with this directory and fill the env values to use it directly.
+with this directory. The template enables the optional OpenAI SDK on the
+generation server; this alone does not select OpenAI or incur API costs.
+For an existing generation-server entry, add `"--extra", "openai"` after
+`"run"` to enable its SDK.
 
 Running with `--directory` lets the servers find the repo-local `.env`. You can
-also provide `GEMINI_API_KEY` and `REPLICATE_API_TOKEN` directly through the MCP
-client's environment settings.
+also provide the needed API keys directly through the MCP client's environment
+settings. Omit unused env entries: an empty value can override a valid `.env`
+value. Keep secrets out of tracked example files.
 
 ### Use the servers from another project (recommended for consumers)
 
@@ -237,14 +357,21 @@ claude mcp add media-analysis --scope user \
 **API keys.** You do not need to copy keys into each project. Because every
 entry runs `uv --directory <riff-mcp> run …`, the server's working directory is
 always the `riff-mcp` checkout, and the servers call `load_dotenv()` — so a
-single `riff-mcp/.env` (with `GEMINI_API_KEY` and `REPLICATE_API_TOKEN`) feeds
+single `riff-mcp/.env` (with only the keys you use) feeds
 the tools no matter which project you launch from. Alternatively, set the keys
-in the server's `env` block (see `.mcp.example.json`).
+in the server's `env` block. For OpenAI-enabled registration, use
+`run --extra openai gemini-prompts-mcp` in the generation command above.
 
-### Skip the permission prompts (quick + iterable)
+### Configure tool permissions deliberately
 
-By default Claude Code asks before each tool call. To make the riff loop fast,
-add the tools to a `permissions.allow` list. For a global setup put it in
+The `generate_image` permission covers both Gemini and OpenAI modes. Only
+auto-approve it if you intend the agent to submit billable image requests
+without per-call review.
+
+Keep the client's normal approval behavior unless the user requests otherwise.
+Do not copy a blanket allowlist as part of installation. If the user wants local
+record lookups auto-approved in Claude Code, an example `permissions.allow`
+list is below. For a global setup it belongs in
 `~/.claude/settings.json`; for a single project use that project's
 `.claude/settings.local.json`:
 
@@ -252,20 +379,8 @@ add the tools to a `permissions.allow` list. For a global setup put it in
 {
   "permissions": {
     "allow": [
-      "mcp__gemini-prompts__generate_image",
-      "mcp__gemini-prompts__start_video_job",
-      "mcp__gemini-prompts__get_video_job",
       "mcp__gemini-prompts__get_generation",
-      "mcp__gemini-prompts__list_generations",
-      "mcp__media-analysis__analyze_image",
-      "mcp__media-analysis__analyze_images",
-      "mcp__media-analysis__analyze_video",
-      "mcp__media-analysis__analyze_audio",
-      "mcp__media-analysis__analyze_videos",
-      "mcp__media-analysis__score_image",
-      "mcp__media-analysis__compare_images",
-      "mcp__media-analysis__extract_visual_tokens",
-      "mcp__media-analysis__extract_video_frames"
+      "mcp__gemini-prompts__list_generations"
     ]
   }
 }
@@ -279,7 +394,8 @@ tokens or other credentials inside prompts or provider parameters.
 
 The entry format is `mcp__<server-name>__<tool-name>`, where `<server-name>`
 matches the key you registered above. List only the tools you want
-auto-approved; anything omitted still prompts.
+auto-approved. Other calls follow the client's remaining permission settings;
+this example does not override other allow rules or the user's current mode.
 
 ### Diagnose with `riff-mcp-doctor`
 
@@ -289,10 +405,16 @@ Before wiring the MCP servers (or after a "tool not working" report), run:
 uv run riff-mcp-doctor          # env vars, Python packages, ffmpeg/ffprobe
 uv run riff-mcp-doctor --network  # plus a cheap Gemini + Replicate auth check
 uv run riff-mcp-doctor --json     # machine-readable output for scripts
+uv run --extra openai riff-mcp-doctor --provider openai
+uv run --extra openai riff-mcp-doctor --provider openai --network
 ```
 
 Exits non-zero on any required failure. Network checks are skipped (not failed)
 when their corresponding token is unset.
+The default doctor retains the Gemini/Replicate checks. `--provider openai`
+checks only the OpenAI key and required imports, so unrelated service keys or
+video binaries are not required. Its optional network check retrieves the
+`gpt-image-2` model; it does not generate an image or establish billing access.
 
 ## Defaults
 
@@ -301,10 +423,17 @@ Current defaults in the standalone CLI:
 - mode: `video`
 - video model: `veo-3.1-fast-generate-preview`
 - image model: `gemini-3-pro-image`
+- image provider: `gemini`; explicit `openai` selects `gpt-image-2`
 - image temperature: omitted by default; `--temperature` is an opt-in override
 - image num outputs: `1`
 - video poll interval: `10` seconds
 - output root: `out/`
+
+For reliable model selection, use `model` in a batch/MCP call or `--model` in
+the CLI. CLI model environment overrides (`GEMINI_IMAGE_MODEL`,
+`GEMINI_VIDEO_MODEL`) are read while resolving jobs, before execution loads
+`.env`; export them in the shell if using them. The MCP image default does not
+read `GEMINI_IMAGE_MODEL`. `.env` is the credentials setup path.
 
 ## Input Formats
 
@@ -366,6 +495,10 @@ Top-level YAML keys:
 
 Each job (and `defaults`) accepts the keys listed in [Supported Keys](#supported-keys).
 
+Some Gemini/Veo examples contain `refs/...` placeholders. They are useful for
+`--plan`, but replace those paths with real images before executing the whole
+batch. Paths resolve relative to the prompt file, not the checkout root.
+
 ### 3. Inline prompt (no file required)
 
 For a single prompt without a batch file — the typical "jamming" workflow when
@@ -415,20 +548,26 @@ flags override them. Mode column shows where each key applies.
 | `prompt` | YAML only | Text format uses the block body for the prompt |
 | `prompt_file` | both | Loads the prompt from a separate file (overrides `prompt`/body) |
 | `model` | both | Model code, e.g. `gemini-3-pro-image` or `gemini-3.1-flash-image` |
-| `aspect_ratio` | both | e.g. `"16:9"`, `"9:16"` |
+| `provider` | image | `gemini` (default) or explicit `openai` |
+| `size` | OpenAI image | Pixel dimensions, e.g. `1536x1024`, or `auto` |
+| `quality` | OpenAI image | `auto`, `low`, `medium`, `high` |
+| `output_format` | OpenAI image | `png`, `jpeg`, `webp` |
+| `background` | OpenAI image | `auto`, `opaque`, `transparent` (PNG/WebP) |
+| `output_compression` | OpenAI image | Integer 0–100 for JPEG/WebP only |
+| `aspect_ratio` | Gemini | e.g. `"16:9"`, `"9:16"` |
 | `duration_seconds` | video | |
 | `enhance_prompt` | video | bool |
 | `number_of_videos` | video | |
 | `num_outputs` | image | 1–4 |
-| `temperature` | image | Optional sampling override; omitted by default and generally left unset for Gemini 3.x |
-| `system_prompt` | image | |
-| `image_size` | image | |
+| `temperature` | Gemini image | Optional sampling override; omitted by default |
+| `system_prompt` | Gemini image | For OpenAI, include instructions in `prompt` |
+| `image_size` | Gemini image | For OpenAI, use `size` |
 | `image` | both | Single input image path |
 | `images` | both | List or comma-separated string of image paths |
 | `reference_images` | video | Explicit Veo 3.1 reference image entries with `reference_type` in the standalone CLI |
 | `video` | video | Input video path |
 | `video_uri` | video | Input video URI |
-| `config` | both | Extra fields forwarded into the underlying generation config (`config.<key>: value` in text headers, nested mapping in YAML). For image jobs, reserved keys are `api`, `thinking_level`, `store`, and `previous_interaction_id`. |
+| `config` | Gemini | Extra fields forwarded into generation config (`config.<key>` in text headers, nested mapping in YAML). For Gemini images, reserved keys are `api`, `thinking_level`, `store`, and `previous_interaction_id`. OpenAI accepts only `api: images` and inactive Gemini defaults; unsupported options fail before a call. |
 
 CLI flags override YAML and text-file settings.
 
@@ -451,10 +590,19 @@ out/
 
 Each job directory includes:
 
-- generated `.mp4` files
+- generated images (Gemini PNG; OpenAI PNG/JPEG/WebP) or `.mp4` video files
 - a `job.json` sidecar with prompt, config, status, and output paths
 
-The run root also gets a manifest JSON for the whole batch.
+The CLI run root also gets a manifest JSON for the whole batch. OpenAI records
+include access mode, request ID, available usage, actual response metadata,
+and input/output SHA-256 hashes. Original output bytes are preserved. Failed
+requests retain a failure record; any saved partial outputs remain listed.
+
+Image requests are blocking and have no async polling ID. `get_generation`
+and `list_generations` index async video jobs only; read an image's returned
+`job_dir` and `job.json` directly. Repeating an identical image request on the
+same date can reuse its output directory and overwrite files. Use a distinct
+title or output root for another take; a matching hash does not skip billing.
 
 ## Useful Commands
 
@@ -509,18 +657,34 @@ uv run gemini-video-prompts my_prompts.dat --format yaml
   `list_generations` also discovers pre-index `status.json` records.
   The generated media still lands under the normal dated output layout, with
   the async `job_id` appended to avoid collisions between identical prompts.
-- Image generation uses the standard `generate_content(...)` flow: text (and
-  optional input images) go in, inline image parts come out and are saved as
-  PNGs.
+- Gemini image generation uses `generate_content(...)` by default or the
+  explicit Interactions path. OpenAI uses Images API generation/edit endpoints
+  and preserves the returned PNG/JPEG/WebP bytes.
 - The tool is intentionally model-string driven. If your teammate gets access to
   a newer CLI preview model, they can pass it with `--model` or
   `GEMINI_VIDEO_MODEL`.
-- Image mode also supports `GEMINI_IMAGE_MODEL`.
+- Gemini CLI image mode supports the exported `GEMINI_IMAGE_MODEL` variable;
+  use explicit `model` in MCP calls.
 - `images` is a convenience shorthand for Veo 3.1 reference images. Those paths
   are converted into `reference_images` entries with `reference_type="asset"`
   in video mode. In image mode, `image` and `images` are treated as edit inputs.
-- Advanced model-specific parameters can go under YAML `config` or text headers
-  as `config.<key>: value`.
+- Advanced Gemini parameters can go under YAML `config` or text headers as
+  `config.<key>: value`. The OpenAI adapter rejects unsupported config fields.
+
+## Maintain the documentation
+
+The registered MCP schema is exported into `docs/TOOL_REFERENCE.md`. After
+changing a tool signature or description, regenerate it and check for drift:
+
+```bash
+uv run python scripts/update_tool_reference.py
+uv run python scripts/update_tool_reference.py --check
+```
+
+These commands do not invoke tools or call providers. Keep
+`docs/AGENT_QUICKSTART.md`, examples, CLI help, and this README consistent.
+Historical designs and live-test receipts must retain their dates and evidence
+boundaries; they are not the current setup reference.
 
 ## Changelog
 
@@ -528,6 +692,14 @@ This project follows [semantic versioning](https://semver.org/). The current
 version is set in [`pyproject.toml`](pyproject.toml).
 
 ### Unreleased
+
+- **Opt-in OpenAI GPT-Image-2 images** — direct API generation and reference
+  edits through MCP, CLI, and YAML/text batches. Optional SDK extra, independent
+  doctor checks, explicit per-invocation billing confirmation, format/quality
+  controls, original output bytes, and usage records.
+  Existing Gemini defaults and job hashes are preserved. Local and SDK transport
+  tests cover the integration. One low-quality 1024×1024 generation and one
+  reference edit succeeded on 2026-09-04; see LIVE_VERIFICATION.md for scope.
 
 - **Consistent generation timestamps** — video results preserve the original
   request time as `created_at` and record local result finalization separately
