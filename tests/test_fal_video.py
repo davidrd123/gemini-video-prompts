@@ -54,6 +54,41 @@ def test_billing_gate_precedes_key_files_and_writes(tmp_path, monkeypatch):
     assert not list(tmp_path.iterdir())
 
 
+@pytest.mark.parametrize("model", [fal.T2V, fal.T2V_TURBO])
+def test_text_to_video_preview_shape_and_reference_rejection(tmp_path, monkeypatch, model):
+    monkeypatch.setattr(fal, "api_key", lambda: pytest.fail("credentials read"))
+    plan = server.start_fal_video_job(
+        prompt="A cup", model=model, resolution="480p", dry_run=True,
+        out_root=str(tmp_path / "out"),
+    )
+    assert plan["resolved_params"] == {
+        "prompt": "A cup", "duration": 5, "resolution": "480P",
+        "prompt_expansion_mode": "balanced", "enable_safety_checker": True,
+        "sync_mode": False, "aspect_ratio": "16:9",
+    }
+    assert plan["references"] == []
+    with pytest.raises(RuntimeError, match="text-to-video does not accept"):
+        fal.build_request(prompt="A cup", model=model, image="frame.png")
+    with pytest.raises(RuntimeError, match="text-to-video does not accept"):
+        fal.build_request(prompt="A cup", model=model, reference_images=["ref.png"])
+
+
+@pytest.mark.parametrize("model", [fal.T2V, fal.T2V_TURBO])
+def test_text_to_video_submits_exact_route_and_payload(tmp_path, transport, model):
+    state, calls = transport
+    state["root"] = str(tmp_path / "out")
+    server.start_fal_video_job(
+        prompt="A cup", model=model, resolution="480p", aspect_ratio="9:16",
+        seed=9, out_root=state["root"], allow_api_billing=True,
+    )
+    assert calls[0].url.path == "/" + model
+    assert json.loads(calls[0].content) == {
+        "prompt": "A cup", "duration": 5, "resolution": "480P",
+        "prompt_expansion_mode": "balanced", "enable_safety_checker": True,
+        "sync_mode": False, "aspect_ratio": "9:16", "seed": 9,
+    }
+
+
 def test_ordered_references_and_exact_bytes(tmp_path):
     a = png(tmp_path / "a.png")
     b = png(tmp_path / "b.png")

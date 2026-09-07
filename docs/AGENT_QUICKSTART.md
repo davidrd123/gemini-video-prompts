@@ -111,7 +111,7 @@ Use absolute input/output paths in MCP calls. With `--directory`, a relative
 reference path resolves against riff-mcp, not the user's other project.
 
 For fal H3 Max, follow [the fal guide](FAL_H3_MAX.md): `FAL_KEY`, the dedicated
-`start_fal_video_job` tool, 480p/768p, and scoped API approval. Its reference
+`start_fal_video_job` tool, 480p/768p, explicit text-to-video routes, and scoped API approval. Its reference
 tokens and parameters differ from Seedance; do not translate them implicitly.
 
 ## Preview, approve, and generate one OpenAI image

@@ -1,7 +1,8 @@
 # H3 Max video through fal
 
 Use the generation MCP server's `start_fal_video_job`. This integration covers
-`minimax/h3-max/image-to-video` and `minimax/h3-max/reference-to-video`.
+`minimax/h3-max/image-to-video`, `minimax/h3-max/reference-to-video`,
+`minimax/h3-max/text-to-video`, and `minimax/h3-max-turbo/text-to-video`.
 The existing `generate_video` / `start_video_job` tools still use Seedance on
 Replicate; the batch CLI's video mode still uses Gemini/Veo.
 
@@ -36,11 +37,21 @@ client's tool list. See [the agent quickstart](AGENT_QUICKSTART.md) for setup.
 |---|---|---|
 | First frame, optionally a last frame | `minimax/h3-max/image-to-video` | `image`, optional `last_frame_image` |
 | Ordered subject, style, motion, or sound references | `minimax/h3-max/reference-to-video` | `reference_images`, `reference_videos`, `reference_audios` |
+| Prompt only | `minimax/h3-max/text-to-video` | no image or reference inputs |
+| Prompt only, turbo route | `minimax/h3-max-turbo/text-to-video` | no image or reference inputs |
 
-Both accept integer durations from 5 to 15 seconds and `480p` or `768p`
-(case insensitive; sent as `480P` / `768P`). Defaults are 5 seconds and 768p.
-Each submission produces one video. These endpoints generate native audio;
-they do not expose the Seedance `generate_audio` toggle.
+Riff currently accepts integer durations from 5 to 15 seconds and `480p` or
+`768p` (case insensitive; sent as `480P` / `768P`). Defaults are 5 seconds and
+768p. Each submission produces one video. These endpoints generate native
+audio; they do not expose the Seedance `generate_audio` toggle. The current fal
+text-to-video schemas also document `1080P`; that capability is intentionally
+outside this initial 480p style-sweep surface.
+
+For the initial style sweep, use `resolution="480p"`. The two text-to-video
+routes accept an explicit aspect ratio, defaulting to `16:9`; use `21:9`,
+`16:9`, `4:3`, `1:1`, `3:4`, or `9:16`. They reject `image`,
+`last_frame_image`, and every `reference_*` field locally, so a reference-guided
+request cannot be silently rerouted as text-to-video.
 
 Image-to-video follows the first frame's aspect ratio. Although fal's endpoint
 can accept a missing image and route to text-to-video, riff requires a first
@@ -102,6 +113,20 @@ For reference-to-video, replace `model`, remove `image`, and supply an ordered
   "reference_images": ["/ABSOLUTE/PATH/character.png", "/ABSOLUTE/PATH/setting.png"],
   "duration": 5,
   "resolution": "768p",
+  "prompt_expansion_mode": "balanced",
+  "dry_run": true
+}
+```
+
+For a text-only 480p planning sweep, use a prompt-only preview:
+
+```json
+{
+  "prompt": "A blue ceramic cup stays still while a thin wisp of steam rises. Static camera, quiet room ambience.",
+  "model": "minimax/h3-max-turbo/text-to-video",
+  "duration": 5,
+  "resolution": "480p",
+  "aspect_ratio": "16:9",
   "prompt_expansion_mode": "balanced",
   "dry_run": true
 }
@@ -199,10 +224,12 @@ uv run --extra openai ruff check src tests scripts
 uv run python scripts/update_tool_reference.py --check
 ```
 
-Primary sources checked 2026-09-04:
+Primary sources checked 2026-09-07:
 
 - [Image-to-video API and schema](https://fal.ai/models/minimax/h3-max/image-to-video/api)
 - [Reference-to-video API and schema](https://fal.ai/models/minimax/h3-max/reference-to-video/api)
+- [Text-to-video API and schema](https://fal.ai/models/minimax/h3-max/text-to-video/api)
+- [Text-to-video Turbo API and schema](https://fal.ai/models/minimax/h3-max-turbo/text-to-video/api)
 - [Image-to-video live pricing](https://fal.ai/models/minimax/h3-max/image-to-video)
 - [Reference-to-video live pricing](https://fal.ai/models/minimax/h3-max/reference-to-video)
 - [fal prompting and settings guide](https://fal.ai/learn/tools/how-to-use-minimax-h3-max)

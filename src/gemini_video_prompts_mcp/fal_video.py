@@ -18,6 +18,9 @@ from .seedance import probe_media_info
 
 I2V = "minimax/h3-max/image-to-video"
 R2V = "minimax/h3-max/reference-to-video"
+T2V = "minimax/h3-max/text-to-video"
+T2V_TURBO = "minimax/h3-max-turbo/text-to-video"
+T2V_MODELS = (T2V, T2V_TURBO)
 BILLING_NOTICE = (
     "fal H3 Max uses separately billed FAL_KEY API access, not a host subscription. "
     "Obtain user approval for the endpoint, clip count, duration, resolution, and references "
@@ -47,8 +50,8 @@ def build_request(*, prompt: str, model: str = I2V, image: str | None = None,
     def invalid(message):
         raise RuntimeError("INVALID_INPUT: " + message)
 
-    if model not in (I2V, R2V):
-        invalid("choose minimax/h3-max/image-to-video or minimax/h3-max/reference-to-video")
+    if model not in (I2V, R2V, *T2V_MODELS):
+        invalid("choose a supported minimax/h3-max image, reference, or text-to-video endpoint")
     if not isinstance(prompt, str) or not 1 <= len(prompt.strip()) <= 50000:
         invalid("prompt must contain 1..50000 characters")
     if type(duration) is not int or not 5 <= duration <= 15:
@@ -72,7 +75,7 @@ def build_request(*, prompt: str, model: str = I2V, image: str | None = None,
         fields = [("image_url", [image], "image", "First frame")]
         if last_frame_image:
             fields.append(("end_image_url", [last_frame_image], "image", "Last frame"))
-    else:
+    elif model == R2V:
         if image or last_frame_image:
             invalid("reference-to-video uses reference_* lists, not first/last frames")
         if not (groups[0] or groups[1]):
@@ -83,6 +86,12 @@ def build_request(*, prompt: str, model: str = I2V, image: str | None = None,
             invalid("unsupported aspect_ratio")
         fields = list(zip(("reference_image_urls", "reference_video_urls", "reference_audio_urls"),
                           groups, ("image", "video", "audio"), ("Image", "Video", "Audio")))
+    else:
+        if image or last_frame_image or any(groups):
+            invalid("text-to-video does not accept image, frame, or reference inputs")
+        if aspect_ratio not in (None, "21:9", "16:9", "4:3", "1:1", "3:4", "9:16"):
+            invalid("unsupported aspect_ratio")
+        fields = []
     params: dict[str, Any] = dict(prompt=prompt.strip(), duration=duration,
                                  resolution=resolution.upper(), prompt_expansion_mode=prompt_expansion_mode,
                                  enable_safety_checker=enable_safety_checker, sync_mode=False)
@@ -90,6 +99,8 @@ def build_request(*, prompt: str, model: str = I2V, image: str | None = None,
         params["seed"] = seed
     if model == R2V:
         params["aspect_ratio"] = aspect_ratio or "adaptive"
+    elif model in T2V_MODELS:
+        params["aspect_ratio"] = aspect_ratio or "16:9"
     refs = []
     for field, paths, kind, label in fields:
         for i, path in enumerate(paths):

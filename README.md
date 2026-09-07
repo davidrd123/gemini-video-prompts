@@ -24,7 +24,7 @@ The repo now has two generation paths:
 - **MCP generation server** — `generate_image` shares the CLI's image workers;
   `generate_video` uses Seedance 2.5 through Replicate (2.0 remains selectable
   via the `model` arg — it is the only one with 1080p/4k output).
-  `start_fal_video_job` separately submits H3 Max image/reference-to-video to fal.
+  `start_fal_video_job` separately submits H3 Max image/reference/text-to-video to fal.
 
 Current defaults:
 
@@ -144,7 +144,7 @@ Generation tools:
   multi-turn image editing.
 - `generate_video` — blocking Replicate-Seedance generation, preserved for simple one-shot calls.
 - `start_video_job` — starts a Replicate-Seedance prediction and returns `{job_id, prediction_id, status, job_dir}` immediately.
-- `start_fal_video_job` — submits an explicitly approved H3 Max image/reference-to-video request to fal, or previews it with `dry_run=true`.
+- `start_fal_video_job` — submits an explicitly approved H3 Max image/reference/text-to-video request to fal, or previews it with `dry_run=true`.
 - `get_video_job` — reads the local record, optionally polls its saved provider (Replicate or fal), and collects completed outputs.
 - `cancel_video_job` — requests cancellation from the saved provider and records the response; fal acceptance does not guarantee running work stops.
 - `get_generation` — returns the durable request, status, result, paths, and
@@ -152,11 +152,12 @@ Generation tools:
 - `list_generations` — searches current and historical async video records by prompt,
   title, model, status, or job ID.
 
-### fal H3 Max image-to-video and reference-to-video
+### fal H3 Max image, reference, and text-to-video
 
 Use `start_fal_video_job` with `minimax/h3-max/image-to-video` or
-`minimax/h3-max/reference-to-video`, 5–15 seconds, and `resolution="480p"` or
-`"768p"` (default). Configure `FAL_KEY` in the untracked `.env`; no additional
+`minimax/h3-max/reference-to-video`, or the explicit prompt-only routes
+`minimax/h3-max/text-to-video` and `minimax/h3-max-turbo/text-to-video`, 5–15
+seconds, and `resolution="480p"` or `"768p"` (default). Configure `FAL_KEY` in the untracked `.env`; no additional
 SDK extra is needed. This uses separately billed fal API access. Preview with
 `dry_run=true`, obtain scoped approval, then set `allow_api_billing=true`.
 Reference inputs can affect charges as well as output duration.
@@ -166,7 +167,8 @@ Use `get_video_job` to poll the returned job ID and collect the output;
 original and expanded prompts are preserved. `prompt_expansion_mode` defaults
 to `balanced`; `quality` is an explicit, slower prompt-rewriting option.
 See the [complete fal guide](docs/FAL_H3_MAX.md) for working examples, reference
-limits, prompt expansion research, current pricing links, and timeout recovery.
+limits, the prompt-only 480p style-sweep preview, prompt expansion research,
+current pricing links, and timeout recovery.
 Existing Seedance tools and CLI video routing retain their behavior.
 
 ### OpenAI GPT-Image-2 generation and editing

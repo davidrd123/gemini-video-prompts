@@ -764,10 +764,12 @@ Confirmation is caller acknowledgement, not an independently enforced cap.
 Args:
     prompt: 1..50000 characters. Reference tokens are Image 1, Video 1,
         Audio 1, etc., numbered independently in each ordered list.
-    model: minimax/h3-max/image-to-video (default) or
-        minimax/h3-max/reference-to-video. No automatic provider fallback.
-    image: Local first frame, required for image-to-video. Output inherits
-        its aspect ratio. Remote URLs are not accepted by this adapter.
+    model: minimax/h3-max/image-to-video (default),
+        minimax/h3-max/reference-to-video,
+        minimax/h3-max/text-to-video, or
+        minimax/h3-max-turbo/text-to-video. No automatic provider fallback.
+    image: Local first frame, required for image-to-video only. Output
+        inherits its aspect ratio. Remote URLs are not accepted by this adapter.
     last_frame_image: Optional local last frame for image-to-video.
     reference_images: Reference-to-video only; up to 9 local images.
     reference_videos: Up to 3 local video clips, each 2..15s, total <=15s.
@@ -777,8 +779,9 @@ Args:
     duration: Integer 5..15 seconds. One video per submission, with native
         model audio; no separate generate_audio switch on these endpoints.
     resolution: 480p or 768p (default); uppercase accepted too.
-    aspect_ratio: Reference-to-video only; adaptive (default), 21:9,
-        16:9, 4:3, 1:1, 3:4, or 9:16.
+    aspect_ratio: Reference-to-video: adaptive (default), 21:9, 16:9,
+        4:3, 1:1, 3:4, or 9:16. Text-to-video: 16:9 (default), 21:9,
+        4:3, 1:1, 3:4, or 9:16. Image-to-video does not accept it.
     seed: Optional integer; provider-returned seed is recorded separately.
     prompt_expansion_mode: balanced (default, about 1s rewrite) or quality
         (up to about 30s rewrite). This is prompt preprocessing effort.
